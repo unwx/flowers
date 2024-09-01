@@ -1,2 +1,3 @@
 mod math;
-pub mod petal;
+mod petal;
+mod color;

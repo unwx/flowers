@@ -13,3 +13,7 @@ overflow-checks = true
 [dependencies]
 image = "0.25"
 glam = "0.29"
+colorgrad = "0.7"
+palette = "0.7"
+noise = "0.9"
+rand = "0.8"
