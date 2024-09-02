@@ -1,7 +1,6 @@
 use colorgrad::Color;
-use palette::color_difference::ImprovedCiede2000;
 use palette::color_theory::{Analogous, Complementary, SplitComplementary, Tetradic, Triadic};
-use palette::{FromColor, Hsl, Lab};
+use palette::Hsl;
 use rand::Rng;
 use std::cmp::Ordering;
 
@@ -51,19 +50,12 @@ pub fn random_palette<R>(
         }
     }
 
-    let primary_lab = Lab::from_color(primary_color);
-    let mut hsl_to_difference: Vec<(Hsl, f32)> = palette
-        .iter()
-        .map(|hsl| (*hsl, Lab::from_color(*hsl).improved_difference(primary_lab)))
-        .collect();
-
-    hsl_to_difference.sort_by(|t1, t2| {
-        t1.1.partial_cmp(&t2.1).unwrap_or(Ordering::Equal)
+    palette.sort_unstable_by(|hsl1, hsl2| {
+        f32::from(hsl1.hue).partial_cmp(&f32::from(hsl2.hue)).unwrap_or(Ordering::Equal)
     });
 
-    hsl_to_difference
+    palette
         .iter()
-        .map(|t| t.0)
         .map(|hsl| Color::from_hsla(f32::from(hsl.hue), hsl.saturation, hsl.lightness, 1.0))
         .collect()
 }
