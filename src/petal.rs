@@ -1,16 +1,44 @@
-use std::f32::consts::PI;
-use glam::Vec2;
 use crate::math::{to_cartesian, Rotate};
+use glam::Vec2;
+use std::f32::consts::PI;
 
 pub fn petal_sin(k: f32, step: f32) -> Vec<Vec2> {
     let theta_bound = 2.0 * (PI / (2.0 * k));
-    (0..=(theta_bound / step) as usize)
+
+    let mut max_point = Vec2::ZERO;
+    let mut max_length = 0.0;
+
+    let mut petal: Vec<Vec2> = (0..=(theta_bound / step) as usize)
         .map(|i| {
             let theta = i as f32 * step;
             let radius = (theta * k).sin();
-            to_cartesian(radius, theta)
+
+            let point = to_cartesian(radius, theta);
+            let length = point.length_squared();
+
+            if max_length < length {
+                max_length = length;
+                max_point = point;
+            }
+
+            point
         })
-        .collect()
+        .collect();
+
+    let is_petal_complex = k < 1.0;
+    let shift = if is_petal_complex { max_point.angle_to(Vec2::Y) } else { PI + max_point.angle_to(Vec2::Y) };
+
+    for i in 0..petal.len() {
+        petal[i] = petal[i].rotate_radians(shift);
+    }
+
+    if is_petal_complex {
+        for i in 0..petal.len() {
+            petal[i] = petal[i] - Vec2::Y;
+        }
+    }
+
+    petal
 }
 
 pub fn petal_tan(k1: f32, k2: f32, step: f32) -> Vec<Vec2> {
