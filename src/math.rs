@@ -8,7 +8,7 @@ pub fn to_cartesian(
 }
 
 
-pub trait Rotate {
+pub trait Rotate: Copy + Clone {
     fn rotate_radians(self, angle: f32) -> Self;
 }
 
