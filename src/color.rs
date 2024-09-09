@@ -11,6 +11,10 @@ pub fn random_palette<R>(
 ) -> Vec<Color> where
     R: Rng,
 {
+    if size <= 1 {
+        return vec![Color::from_hsla(f32::from(primary_color.hue), primary_color.saturation, primary_color.lightness, 1.0)];
+    }
+
     let mut palette = Vec::with_capacity(size + 3);
     palette.push(primary_color);
 

@@ -34,6 +34,7 @@ pub fn scale_petal_side(side: &[Vec2], size: u32) -> Vec<IVec2> {
         return vec![];
     }
 
+    debug_assert!(size > 0, "Scaling to 0 makes all points equal to 0");
     let scale = |point: Vec2| {
         IVec2::new(
             (point.x * (size as f32)).round() as i32,
@@ -197,6 +198,9 @@ fn petal_side<F, AF>(
         }
     }
 
+    if *petal.first().unwrap() != Vec2::ZERO {
+        petal.push(Vec2::ZERO);
+    }
     if petal.last().unwrap().y != -1.0 {
         petal.push(Vec2::new(0.0, -1.0));
     }
