@@ -75,6 +75,7 @@ pub fn merge_sides(side1: &[IVec2], side2: &[IVec2]) -> Vec<PetalPoint> {
         petal.push(PetalPoint::from_ivec2(*non_empty_side.first().unwrap(), false))
     }
 
+    let mut support_points_on_zero_y = 0;
     let mut last_y_diff = 0;
     let mut last_support_point_index = 0;
     let mut iterator = side1.iter().chain(side2.iter().rev());
@@ -86,26 +87,28 @@ pub fn merge_sides(side1: &[IVec2], side2: &[IVec2]) -> Vec<PetalPoint> {
 
         if y_diff != 0 {
             if last_y_diff != y_diff {
-                petal[last_support_point_index].support = false;
+                let last_support_point = &mut petal[last_support_point_index];
+                last_support_point.support = false;
+
+                if last_support_point.y == 0 {
+                    support_points_on_zero_y -= 1;
+                }
             }
 
             petal.push(PetalPoint::from_ivec2(*point, true));
             last_support_point_index = petal.len() - 1;
             last_y_diff = y_diff;
+
+            if point.y == 0 {
+                support_points_on_zero_y += 1;
+            }
         } else {
             petal.push(PetalPoint::from_ivec2(*point, false));
         }
     }
 
-    for point in petal.iter_mut().rev() {
-        if point.y == 0 {
-            if point.support {
-                point.support = false;
-                break;
-            }
-        } else {
-            break;
-        }
+    if support_points_on_zero_y % 2 == 0 {
+        petal.first_mut().unwrap().support = true;
     }
 
     petal.shrink_to_fit();
@@ -194,10 +197,8 @@ fn petal_side<F, AF>(
         }
     }
 
-    if flip {
-        for i in 0..petal.len() {
-            petal[i] -= Vec2::Y
-        }
+    if petal.last().unwrap().y != -1.0 {
+        petal.push(Vec2::new(0.0, -1.0));
     }
     if mirror {
         for i in 0..petal.len() {
