@@ -2,24 +2,6 @@ use crate::math::{to_cartesian, Rotate};
 use glam::{IVec2, Vec2};
 use std::f32::consts::PI;
 
-#[derive(Copy, Clone, Debug)]
-pub struct PetalPoint {
-    pub x: i32,
-    pub y: i32,
-    pub support: bool,
-}
-
-impl PetalPoint {
-    pub fn from_ivec2(point: IVec2, support: bool) -> Self {
-        PetalPoint {
-            x: point.x,
-            y: point.y,
-            support,
-        }
-    }
-}
-
-
 pub fn petal_side_sin(k: f32, step: f32, flip: bool, mirror: bool) -> Vec<Vec2> {
     petal_side(k, step, flip, mirror, f32::sin, f32::asin)
 }
@@ -65,10 +47,25 @@ pub fn scale_petal_side(side: &[Vec2], size: u32) -> Vec<IVec2> {
     scaled_side
 }
 
-pub fn merge_sides(side1: &[IVec2], side2: &[IVec2]) -> Vec<PetalPoint> {
+pub fn merge_sides(side1: &[IVec2], side2: &[IVec2]) -> Vec<(i32, Vec<(i32, bool)>)> {
     let mut petal = Vec::with_capacity(side1.len() + side2.len());
     if petal.capacity() == 0 {
         return vec![];
+    }
+
+    struct PetalPoint {
+        x: i32,
+        y: i32,
+        support: bool,
+    }
+    impl PetalPoint {
+        fn from_ivec2(vec: IVec2, support: bool) -> Self {
+            Self {
+                x: vec.x,
+                y: vec.y,
+                support,
+            }
+        }
     }
 
     {
@@ -76,87 +73,155 @@ pub fn merge_sides(side1: &[IVec2], side2: &[IVec2]) -> Vec<PetalPoint> {
         petal.push(PetalPoint::from_ivec2(*non_empty_side.first().unwrap(), false))
     }
 
-    let mut support_points_on_zero_y = 0;
-    let mut last_y_diff = 0;
-    let mut last_support_point_index = 0;
-    let mut iterator = side1.iter().chain(side2.iter().rev());
-    iterator.next();
+    {
+        let mut last_y_diff = 0;
+        let mut last_support_point_index = 0;
+        let mut iterator = side1.iter().chain(side2.iter().rev());
+        iterator.next();
 
-    for point in iterator {
-        let previous_point = petal.last_mut().unwrap();
-        let y_diff = point.y - previous_point.y;
+        for point in iterator {
+            let previous_point = petal.last_mut().unwrap();
+            let y_diff = point.y - previous_point.y;
 
-        if y_diff != 0 {
-            if last_y_diff != y_diff {
-                let last_support_point = &mut petal[last_support_point_index];
-                last_support_point.support = false;
-
-                if last_support_point.y == 0 {
-                    support_points_on_zero_y -= 1;
+            if y_diff != 0 {
+                if last_y_diff != y_diff {
+                    let last_support_point = &mut petal[last_support_point_index];
+                    last_support_point.support = false;
                 }
-            }
 
-            petal.push(PetalPoint::from_ivec2(*point, true));
-            last_support_point_index = petal.len() - 1;
-            last_y_diff = y_diff;
-
-            if point.y == 0 {
-                support_points_on_zero_y += 1;
+                petal.push(PetalPoint::from_ivec2(*point, true));
+                last_support_point_index = petal.len() - 1;
+                last_y_diff = y_diff;
+            } else {
+                petal.push(PetalPoint::from_ivec2(*point, false));
             }
-        } else {
-            petal.push(PetalPoint::from_ivec2(*point, false));
         }
     }
 
-    if support_points_on_zero_y % 2 == 0 {
-        petal.first_mut().unwrap().support = true;
-    }
+    let y_to_x_petal_points = {
+        let (min_y, max_y, support_points_on_zero_y) = {
+            let mut min_y = i32::MAX;
+            let mut max_y = i32::MIN;
+            let mut support_points_on_zero_y = 0u32;
 
-    petal.shrink_to_fit();
-    petal
+            for point in &petal {
+                if min_y > point.y { min_y = point.y }
+                if max_y < point.y { max_y = point.y }
+                if point.y == 0 && point.support { support_points_on_zero_y += 1 }
+            }
+
+            (min_y, max_y, support_points_on_zero_y)
+        };
+
+        if support_points_on_zero_y % 2 != 0 {
+            petal.first_mut().unwrap().support = true;
+        }
+
+        let mut y_to_x_petal_point = Vec::<(i32, Vec<(i32, bool)>)>::with_capacity((max_y - min_y) as usize + 1);
+
+        for i in 0..y_to_x_petal_point.capacity() {
+            y_to_x_petal_point.push((min_y + i as i32, vec![]))
+        }
+        for point in petal {
+            y_to_x_petal_point[(point.y - min_y) as usize].1.push((point.x, point.support))
+        }
+
+        for x_points in y_to_x_petal_point.iter_mut() {
+            x_points.1.sort_unstable_by_key(|point| point.0);
+            x_points.1.shrink_to_fit();
+        }
+
+        fn remove_extra_last_points(y_to_x_petal_point: &mut Vec<(i32, Vec<(i32, bool)>)>, inverse: bool) {
+            let from_index = if inverse { (y_to_x_petal_point.len() - 1)  as i32 } else { 0 };
+            let to_index = if inverse { -1 } else { y_to_x_petal_point.len()  as i32 };
+            let index_acc = if inverse { -1 } else { 1 };
+            let mut index = from_index;
+            let mut last_removed_x = 0;
+
+            fn all_x_the_same(x_array: &Vec<(i32, bool)>) -> bool {
+                if x_array.is_empty() {
+                    return false;
+                }
+
+                let last_x = x_array[0].0;
+                for i in 1..x_array.len() {
+                    if x_array[i].0 != last_x {
+                        return false;
+                    }
+                }
+
+                true
+            }
+
+            while index + index_acc != to_index {
+                let x_points = &y_to_x_petal_point[index as usize].1;
+                if x_points.len() <= 1 || all_x_the_same(x_points) {
+                    if !x_points.is_empty() {
+                        last_removed_x = x_points[0].0;
+                    }
+
+                    y_to_x_petal_point[index as usize].1.clear();
+                    index += index_acc;
+                    continue;
+                }
+
+                let mut last_x = x_points[0].0;
+                for i in 1..x_points.len() {
+                    let (x, _) = x_points[i];
+                    if x != last_x + 1 {
+                        if index != from_index {
+                            y_to_x_petal_point[(index - index_acc) as usize].1.push((last_removed_x, true));
+                            break;
+                        }
+                    }
+                    last_x = x;
+                }
+
+                break;
+            }
+        }
+
+        remove_extra_last_points(&mut y_to_x_petal_point, false);
+        remove_extra_last_points(&mut y_to_x_petal_point, true);
+
+        y_to_x_petal_point
+    };
+
+    y_to_x_petal_points
 }
 
 
-pub fn find_petal_range(petal: &[PetalPoint]) -> Vec<(i32, Vec<(i32, i32)>)> {
+pub fn find_petal_range(petal: &[(i32, &[(i32, bool)])]) -> Vec<(i32, Vec<(i32, i32)>)> {
     if petal.is_empty() {
         return vec![];
     }
 
-    let min_y = petal.iter().min_by_key(|point| point.y).unwrap().y;
-    let max_y = petal.iter().max_by_key(|point| point.y).unwrap().y;
+    let mut ranges = Vec::with_capacity(petal.len());
+    for y_to_x_points in petal {
+        let y = y_to_x_points.0;
+        let support_points: Vec<(i32)> = y_to_x_points
+            .1
+            .iter()
+            .filter(|point| point.1)
+            .map(|point| point.0)
+            .collect();
 
-    let mut y_to_x_points = Vec::<Vec<i32>>::with_capacity((max_y - min_y) as usize + 1);
-    y_to_x_points.resize_with(y_to_x_points.capacity(), || vec![]);
-
-    petal.iter()
-        .filter(|point| point.support)
-        .for_each(|point| y_to_x_points[(point.y - min_y) as usize].push(point.x));
-
-    for x_points in y_to_x_points.iter_mut() {
-        x_points.sort_unstable();
-    }
-
-    let mut ranges = Vec::with_capacity(y_to_x_points.len());
-    for i in 0..y_to_x_points.len() {
-        let x_points = &y_to_x_points[i];
-        let y = (i as i32) + min_y;
-
-        if x_points.len() <= 1 {
+        if support_points.len() <= 1 {
             ranges.push((y, vec![]));
             continue;
         }
 
-        let mut range = Vec::with_capacity((x_points.len() / 2) + 1);
+        let mut range = Vec::with_capacity((support_points.len() / 2) + 1);
         {
             let mut index = 0;
-            while index < x_points.len() - 1 {
-                range.push((x_points[index], x_points[index + 1]));
+            while index < support_points.len() - 1 {
+                range.push((support_points[index], support_points[index + 1]));
                 index += 2;
             }
         }
 
-        if x_points.len() % 2 != 0 {
-            range.push((x_points[x_points.len() - 2], x_points[x_points.len() - 1]))
+        if support_points.len() % 2 != 0 {
+            range.push((support_points[support_points.len() - 2], support_points[support_points.len() - 1]))
         }
 
         ranges.push((y, range));
@@ -198,11 +263,11 @@ fn petal_side<F, AF>(
         }
     }
 
-    if *petal.first().unwrap() != Vec2::ZERO {
-        petal.push(Vec2::ZERO);
-    }
-    if petal.last().unwrap().y != -1.0 {
-        petal.push(Vec2::new(0.0, -1.0));
+    {
+        let control_y = if flip { 1.0 } else { -1.0 };
+        if petal.last().unwrap().y != control_y {
+            petal.push(Vec2::new(0.0, control_y));
+        }
     }
     if mirror {
         for i in 0..petal.len() {
