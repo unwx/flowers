@@ -105,10 +105,9 @@ pub fn find_petal_area(petal: &[I16Vec2]) -> Vec<(I16Vec2, I16Vec2)> {
 
             if last_y_diff != y_diff {
                 let index = (previous_point.y - min_y) as usize;
-                let len = checkpoints[index].len();
-
-                if len > 0 {
-                    checkpoints[index].remove(len - 1);
+                if let Some(last_checkpoint) = checkpoints[index].last() {
+                    let last = *last_checkpoint;
+                    checkpoints[index].push(last);
                 }
 
                 last_y_diff = y_diff;
@@ -131,28 +130,105 @@ pub fn find_petal_area(petal: &[I16Vec2]) -> Vec<(I16Vec2, I16Vec2)> {
 
     let mut area = Vec::with_capacity(checkpoints.len() * 2);
     {
-        let to_ivec = |x1: i16, x2: i16, y: i16| -> (I16Vec2, I16Vec2) {
-            (I16Vec2::new(x1, y), I16Vec2::new(x2, y))
+        let sorted_petal_frame = {
+            let mut frame: Vec<Vec<i16>> = Vec::with_capacity((max_y - min_y) as usize + 1);
+            frame.resize_with(frame.capacity(), || vec![]);
+
+            for point in petal {
+                frame[(point.y - min_y) as usize].push(point.x);
+            }
+            for vec in &mut frame {
+                vec.sort_unstable();
+            }
+
+            frame
         };
 
-        for (checkpoint_index, x_points) in checkpoints.iter().enumerate() {
-            let y = min_y + (checkpoint_index as i16);
-            if x_points.len() <= 1 {
+        let mut push_range = |x1: i16, x2: i16, y: i16, frame_line_index: usize| -> Option<usize> {
+            if x2 - x1 <= 1 {
+                return None;
+            }
+
+            let frame_line = &sorted_petal_frame[(y - min_y) as usize];
+            let find_x_index = |x_to_find: i16, from_index: usize| -> Option<usize> {
+                for i in from_index..frame_line.len() {
+                    if frame_line[i] == x_to_find {
+                        return Some(i);
+                    }
+                }
+
+                return None;
+            };
+
+            let x1_index = find_x_index(x1, frame_line_index)?;
+            let x2_index = find_x_index(x2, x1_index)?;
+
+            let mut actual_x1 = x1;
+            let mut actual_x2 = x2;
+
+            for i in (x1_index + 1)..x2_index {
+                let x = frame_line[i];
+                debug_assert!(x >= actual_x1);
+
+                if x - actual_x1 > 1 {
+                    break;
+                }
+
+                actual_x1 = x;
+            }
+            if x2_index != 0 {
+                let mut i = x2_index - 1;
+                while i > x1_index {
+                    let x = frame_line[i];
+                    debug_assert!(actual_x2 >= x);
+
+                    if actual_x2 - x > 1 {
+                        break;
+                    }
+
+                    actual_x2 = x;
+                    i -= 1;
+                }
+            }
+
+            if actual_x2 - actual_x1 > 1 {
+                area.push((
+                    I16Vec2::new(actual_x1 + 1, y),
+                    I16Vec2::new(actual_x2 - 1, y),
+                ));
+            }
+
+            Some(x2_index)
+        };
+
+        for (checkpoint_y_index, x_checkpoints) in checkpoints.iter().enumerate() {
+            let y = min_y + (checkpoint_y_index as i16);
+            if x_checkpoints.len() <= 1 {
                 continue;
             }
 
-            let mut index = 0;
-            while index < x_points.len() - 1 {
-                area.push(to_ivec(x_points[index], x_points[index + 1], y));
-                index += 2;
+            let mut checkpoint_index = 0;
+            let mut frame_line_last_index = 0;
+
+            while checkpoint_index < x_checkpoints.len() - 1 {
+                let last_index = push_range(
+                    x_checkpoints[checkpoint_index],
+                    x_checkpoints[checkpoint_index + 1],
+                    y,
+                    frame_line_last_index,
+                );
+
+                frame_line_last_index = last_index.unwrap_or(frame_line_last_index);
+                checkpoint_index += 2;
             }
 
-            if x_points.len() % 2 != 0 {
-                area.push(to_ivec(
-                    x_points[x_points.len() - 2],
-                    x_points[x_points.len() - 1],
+            if x_checkpoints.len() % 2 != 0 {
+                push_range(
+                    x_checkpoints[x_checkpoints.len() - 2],
+                    x_checkpoints[x_checkpoints.len() - 1],
                     y,
-                ));
+                    0,
+                );
             }
         }
     }

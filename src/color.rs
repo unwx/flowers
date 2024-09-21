@@ -12,10 +12,12 @@ use noise::{
     RidgedMulti, RotatePoint, Seedable, Simplex, SuperSimplex, Terrace, Turbulence, Worley,
 };
 use palette::color_theory::{Analogous, Complementary, SplitComplementary, Tetradic, Triadic};
-use palette::Hsl;
+use palette::convert::FromColorUnclamped;
+use palette::{Hsl, Srgb};
 use rand::distributions::uniform::SampleRange;
 use rand::Rng;
 use std::cmp::Ordering;
+use std::slice::Iter;
 
 /*
  * Gradient
@@ -156,7 +158,7 @@ pub fn colorize<G, N>(
     gradient: &G,
     noise: &N,
     noise_bound: f32,
-) -> Option<Vec<(I16Vec2, Color)>>
+) -> Option<(Vec<(I16Vec2, Color)>, Color)>
 where
     G: Gradient,
     N: NoiseFn<f64, 3>,
@@ -180,7 +182,7 @@ where
 
             min_x = min_x.min(from.x);
             max_x = max_x.max(to.x);
-            total_elements += (to.x - from.x) as usize;
+            total_elements += (to.x - from.x) as usize + 1;
         }
 
         (min_y, max_y, min_x, max_x, total_elements)
@@ -196,44 +198,30 @@ where
         .set_y_bounds(f64::from(-noise_bound.abs()), f64::from(noise_bound.abs()))
         .build();
 
-    let (min_noise, max_noise) = {
-        let mut min = f64::MAX;
-        let mut max = f64::MIN;
-
-        for value in &noise_map {
-            let value = *value;
-            if min > value {
-                min = value;
-            }
-            if max < value {
-                max = value;
-            }
-        }
-
-        (min, max)
-    };
-    if (min_noise - max_noise).abs() <= f64::EPSILON {
-        return None;
-    }
+    let (min_noise, max_noise) = f64_min_max(noise_map.iter())?;
+    let mut average_noise = 0.0;
 
     for (from, to) in area {
         let y = from.y;
 
-        for x in from.x..to.x {
-            let noise_value = noise_map.get_value((x - min_x) as usize, (y - min_y) as usize);
-            let gradient_value = gradient.at(normalize_f64(
-                noise_value,
+        for x in from.x..=to.x {
+            let noise_value = normalize_f64(
+                noise_map.get_value((x - min_x) as usize, (y - min_y) as usize),
                 min_noise,
                 max_noise,
                 f64::from(gradient.domain().0),
                 f64::from(gradient.domain().1),
-            ) as f32);
+            ) as f32;
+
+            let gradient_value = gradient.at(noise_value);
+            average_noise += noise_value;
 
             points.push((I16Vec2::new(x, y), gradient_value));
         }
     }
 
-    Some(points)
+    average_noise /= total_elements as f32;
+    Some((points, gradient.at(average_noise)))
 }
 
 pub fn random_gradient<R: Rng>(colors: &[Color], random: &mut R) -> DynGradient {
@@ -480,29 +468,33 @@ pub fn random_noise<R: Rng>(random: &mut R) -> DynNoise<f64, 3> {
     merge_noises(noises, random)
 }
 
-pub fn random_palette<R>(size: usize, primary_color: Hsl, random: &mut R) -> Vec<Color>
-where
-    R: Rng,
-{
+/*
+ * Color
+ */
+
+const MIN_COLOR_LIGHT: f32 = 0.05;
+const MAX_COLOR_LIGHT: f32 = 0.95;
+
+pub fn random_color<R: Rng>(random: &mut R) -> Color {
+    hsl_to_color(Hsl::new_srgb(
+        random.gen_range(0.0..=1.0),
+        random.gen_range(0.0..=1.0),
+        random.gen_range(MIN_COLOR_LIGHT..MAX_COLOR_LIGHT),
+    ))
+}
+
+pub fn random_palette<R: Rng>(size: usize, primary_color: Color, random: &mut R) -> Vec<Color> {
     assert!(
         size <= 12,
         "palette can only contain up to 12 colors, size: {size}"
     );
-    let convert = |hsl: Hsl| -> Color {
-        Color::from_hsla(
-            f32::from(primary_color.hue),
-            primary_color.saturation,
-            primary_color.lightness,
-            1.0,
-        )
-    };
 
     if size <= 1 {
-        return vec![convert(primary_color)];
+        return vec![primary_color];
     }
 
     let mut palette = Vec::with_capacity(size + 3);
-    palette.push(primary_color);
+    palette.push(color_to_hsl(primary_color));
 
     while palette.len() < size {
         let base_color = palette[random.gen_range(0..palette.len())];
@@ -544,7 +536,61 @@ where
             .unwrap_or(Ordering::Equal)
     });
 
-    palette.iter().map(convert).collect()
+    palette.iter().map(|hsl: &Hsl| hsl_to_color(*hsl)).collect()
+}
+
+pub fn background_color<R: Rng>(primary_color: Color, random: &mut R) -> Color {
+    let primary_color = color_to_hsl(primary_color);
+
+    let hsl = if primary_color.lightness > 0.15 {
+        Hsl::new_srgb(
+            primary_color.hue,
+            primary_color.saturation,
+            random.gen_range(MAX_COLOR_LIGHT..=1.0),
+        )
+    } else {
+        Hsl::new_srgb(
+            primary_color.hue,
+            primary_color.saturation,
+            random.gen_range(0.0..MIN_COLOR_LIGHT),
+        )
+    };
+
+    hsl_to_color(hsl)
+}
+
+pub fn hsl_to_color(hsl: Hsl) -> Color {
+    let srgb = Srgb::from_color_unclamped(hsl).into_format::<u8>();
+    Color::from_rgba8(srgb.red, srgb.green, srgb.blue, u8::MAX)
+}
+
+pub fn color_to_rgb(color: Color) -> Srgb {
+    Srgb::new(color.r, color.g, color.b)
+}
+
+pub fn color_to_hsl(color: Color) -> Hsl {
+    Hsl::from_color_unclamped(color_to_rgb(color))
+}
+
+fn f64_min_max(source: Iter<'_, f64>) -> Option<(f64, f64)> {
+    let mut min = f64::MAX;
+    let mut max = f64::MIN;
+
+    for value in source {
+        let value = *value;
+        if min > value {
+            min = value;
+        }
+        if max < value {
+            max = value;
+        }
+    }
+
+    if min == f64::MAX || max == f64::MIN {
+        None
+    } else {
+        Some((min, max))
+    }
 }
 
 /// O(n) warning, small `size` expected.

@@ -7,3 +7,7 @@ pub fn to_cartesian(radius: f32, theta: f32) -> Vec2 {
 pub fn normalize_f64(value: f64, old_min: f64, old_max: f64, new_min: f64, new_max: f64) -> f64 {
     new_min + (value - old_min) * (new_max - new_min) / (old_max - old_min)
 }
+
+pub fn normalize_f32(value: f32, old_min: f32, old_max: f32, new_min: f32, new_max: f32) -> f32 {
+    normalize_f64(value as f64, old_min as f64, old_max as f64, new_min as f64, new_max as f64) as f32
+}
