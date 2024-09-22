@@ -114,12 +114,12 @@ impl<const DIM: usize> NoiseFn<f64, DIM> for DynNoise<f64, DIM> {
         let mut safe_point: [f64; DIM] = [0.0; DIM];
 
         for i in 0..DIM {
-            safe_point[i] = point[i].clamp(f64::from(i16::MIN), f64::from(i16::MAX));
+            safe_point[i] = point[i].clamp(f32::MIN as f64, f32::MAX as f64);
         }
 
         self.noise
             .get(safe_point)
-            .clamp(f64::from(i16::MIN), f64::from(i16::MAX))
+            .clamp(f32::MIN as f64, f32::MAX as f64)
     }
 }
 

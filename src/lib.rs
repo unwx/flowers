@@ -72,7 +72,7 @@ pub fn gen_mosaic_from_seed(seed: u64, size: u16) -> Option<RgbImage> {
             let side1 = random_side(rotation1, &mut random);
             let side2 = random_side(rotation2, &mut random);
 
-            let merge_mode = if (rotation1 - rotation2).abs() <= 30.0_f32.to_radians() {
+            let merge_mode = if (rotation1 - rotation2).abs() <= 30.0_f32.to_radians() && random.gen_bool(0.5) {
                 MergeMode::SideWithSide
             } else {
                 MergeMode::SideWithOrigin
@@ -116,12 +116,13 @@ pub fn gen_mosaic_from_seed(seed: u64, size: u16) -> Option<RgbImage> {
         {
             let center = image.width() as u16 / 2;
 
-            let light_acc =
+            let (light_acc, light_min) =
                 if color_to_hsl(background_color).lightness < 0.5 && random.gen_bool(0.5) {
-                    2.0
+                    (random.gen_range(1.5..=2.5), random.gen_range(0.1..=0.15))
                 } else {
-                    0.5
+                    (random.gen_range(0.4..=0.6), 0.0)
                 };
+
 
             for (point, color) in colorful_points {
                 let rgb = color.to_rgba8();
@@ -140,7 +141,7 @@ pub fn gen_mosaic_from_seed(seed: u64, size: u16) -> Option<RgbImage> {
                 let pixel_srgb = Srgb::new(pixel.0[0], pixel.0[1], pixel.0[2]).into_format::<f32>();
                 let mut pixel_hsl = Hsl::from_color_unclamped(pixel_srgb);
 
-                pixel_hsl.lightness *= light_acc;
+                pixel_hsl.lightness = pixel_hsl.lightness.max(light_min) * light_acc;
                 let pixel_srgb = Srgb::from_color_unclamped(pixel_hsl).into_format::<u8>();
 
                 pixel.0[0] = pixel_srgb.red;
