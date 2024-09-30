@@ -5,16 +5,19 @@ edition = "2021"
 
 
 [profile.dev]
-opt-level = 0
+opt-level = 3
 debug = true
 overflow-checks = true
 
 
 [dependencies]
 image = "0.25"
+imageproc = "0.25"
 glam = "0.29"
 colorgrad = "0.7"
 palette = "0.7"
 noise = "0.9"
 rand = "0.8"
+rand_core = "0.6"
+rand_chacha = "0.3"
 dyn-clone = "1.0"

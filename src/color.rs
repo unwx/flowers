@@ -17,7 +17,6 @@ use palette::{Hsl, Srgb};
 use rand::distributions::uniform::SampleRange;
 use rand::Rng;
 use std::cmp::Ordering;
-use std::slice::Iter;
 
 /*
  * Gradient
@@ -65,7 +64,7 @@ impl Gradient for DynGradient {
  * Noise
  */
 
-pub const MAX_OCTAVES: usize = 32;
+pub const MAX_OCTAVES: usize = 16;
 
 pub trait CloneableNoise<T, const DIM: usize>: NoiseFn<T, DIM> + DynClone {}
 clone_trait_object!(CloneableNoise<f64, 3>);
@@ -112,14 +111,15 @@ impl<const DIM: usize> NoiseFn<f64, DIM> for DynNoise<f64, DIM> {
     fn get(&self, point: [f64; DIM]) -> f64 {
         // Prevent noise::math::vectors::Vector3<T>::floor_to_isize -> unwrap() panic
         let mut safe_point: [f64; DIM] = [0.0; DIM];
-
-        for i in 0..DIM {
-            safe_point[i] = point[i].clamp(f32::MIN as f64, f32::MAX as f64);
+        fn clamp(value: f64) -> f64 {
+            value.clamp(isize::MIN as f64, isize::MAX as f64)
         }
 
-        self.noise
-            .get(safe_point)
-            .clamp(f32::MIN as f64, f32::MAX as f64)
+        for i in 0..DIM {
+            safe_point[i] = clamp(point[i]);
+        }
+
+        clamp(self.noise.get(safe_point))
     }
 }
 
@@ -157,7 +157,7 @@ pub fn colorize<G, N>(
     area: &[(I16Vec2, I16Vec2)],
     gradient: &G,
     noise: &N,
-    noise_bound: f32,
+    noise_scale: f32,
 ) -> Option<(Vec<(I16Vec2, Color)>, Color)>
 where
     G: Gradient,
@@ -191,15 +191,20 @@ where
         return None;
     }
 
-    let mut points = Vec::with_capacity(total_elements);
+    let mut pixels = Vec::with_capacity(total_elements);
     let noise_map = PlaneMapBuilder::new(&noise)
         .set_size((max_x - min_x) as usize, (max_y - min_y) as usize)
-        .set_x_bounds(f64::from(-noise_bound.abs()), f64::from(noise_bound.abs()))
-        .set_y_bounds(f64::from(-noise_bound.abs()), f64::from(noise_bound.abs()))
+        .set_x_bounds(f64::from(-noise_scale.abs()), f64::from(noise_scale.abs()))
+        .set_y_bounds(f64::from(-noise_scale.abs()), f64::from(noise_scale.abs()))
         .build();
 
-    let (min_noise, max_noise) = f64_min_max(noise_map.iter())?;
-    let mut average_noise = 0.0;
+    let min_noise = *noise_map
+        .iter()
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal))?;
+    let max_noise = *noise_map
+        .iter()
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal))?;
+    let mut average_noise = 0.0_f64;
 
     for (from, to) in area {
         let y = from.y;
@@ -214,14 +219,15 @@ where
             ) as f32;
 
             let gradient_value = gradient.at(noise_value);
-            average_noise += noise_value;
+            average_noise += noise_value as f64;
 
-            points.push((I16Vec2::new(x, y), gradient_value));
+            pixels.push((I16Vec2::new(x, y), gradient_value));
         }
     }
 
-    average_noise /= total_elements as f32;
-    Some((points, gradient.at(average_noise)))
+    average_noise /= total_elements as f64;
+    pixels.shrink_to_fit();
+    Some((pixels, gradient.at(average_noise as f32)))
 }
 
 pub fn random_gradient<R: Rng>(colors: &[Color], random: &mut R) -> DynGradient {
@@ -252,7 +258,8 @@ pub fn random_gradient<R: Rng>(colors: &[Color], random: &mut R) -> DynGradient 
     .unwrap()
 }
 
-pub fn random_noise<R: Rng>(random: &mut R) -> DynNoise<f64, 3> {
+pub fn random_noise<R: Rng>(internal_seed: u32, random: &mut R) -> DynNoise<f64, 3> {
+    #[rustfmt::skip]
     fn decorate_noise<R: Rng>(
         noise: DynNoise<f64, 3>,
         decoration_chance: f32,
@@ -279,19 +286,27 @@ pub fn random_noise<R: Rng>(random: &mut R) -> DynNoise<f64, 3> {
             ),
             4 => {
                 let mut curve = Curve::new(noise);
-                let points =
-                    rand_unique_f64_values(random.gen_range(4..=32), random, || -3.0..=3.0);
+                let bound = 3.0;
+
+                let points = rand_unique_f64_values(
+                    random.gen_range(4..=32),
+                    random,
+                    || -bound..=bound
+                );
 
                 for point in points {
-                    curve = curve.add_control_point(point, random.gen_range(-3.0..=3.0));
+                    curve = curve.add_control_point(point, random.gen_range(-bound..=bound));
                 }
 
                 DynNoise::new(curve)
             }
             5 => {
                 let mut terrace = Terrace::new(noise).invert_terraces(random.gen_bool(0.5));
-                let points =
-                    rand_unique_f64_values(random.gen_range(2..=32), random, || -3.0..=3.0);
+                let points = rand_unique_f64_values(
+                    random.gen_range(2..=32),
+                    random,
+                    || -3.0..=3.0
+                );
 
                 for point in points {
                     terrace = terrace.add_control_point(point);
@@ -306,7 +321,7 @@ pub fn random_noise<R: Rng>(random: &mut R) -> DynNoise<f64, 3> {
     fn gen_noise<R: Rng>(
         seed: u32,
         fractal_chance: &mut f32,
-        fractal_chance_acc: f32,
+        fractal_chance_reduction: f32,
         decoration_chance: f32,
         random: &mut R,
     ) -> DynNoise<f64, 3> {
@@ -314,17 +329,17 @@ pub fn random_noise<R: Rng>(random: &mut R) -> DynNoise<f64, 3> {
             size: usize,
             seed: u32,
             fractal_chance: &mut f32,
-            fractal_chance_acc: f32,
+            fractal_chance_reduction: f32,
             decoration_chance: f32,
             random: &mut R,
         ) -> Vec<DynNoise<f64, 3>> {
             let mut noises = Vec::with_capacity(size);
             for _ in 0..size {
-                *fractal_chance = (*fractal_chance + fractal_chance_acc).clamp(0.0, 1.0);
+                *fractal_chance = (*fractal_chance - fractal_chance_reduction).clamp(0.0, 1.0);
                 noises.push(gen_noise(
                     seed,
                     fractal_chance,
-                    fractal_chance_acc,
+                    fractal_chance_reduction,
                     decoration_chance,
                     random,
                 ));
@@ -335,12 +350,12 @@ pub fn random_noise<R: Rng>(random: &mut R) -> DynNoise<f64, 3> {
 
         let noise = {
             if random.gen_range(0.0..=1.0) < *fractal_chance {
-                let octaves = random.gen_range(2..(MAX_OCTAVES / 2));
+                let octaves = random.gen_range(2..=MAX_OCTAVES);
                 let sources = gen_noises(
                     octaves,
                     seed,
                     fractal_chance,
-                    fractal_chance_acc,
+                    fractal_chance_reduction,
                     decoration_chance,
                     random,
                 );
@@ -447,19 +462,18 @@ pub fn random_noise<R: Rng>(random: &mut R) -> DynNoise<f64, 3> {
         noises[0].clone()
     }
 
-    let seed = random.next_u32();
     let decoration_chance = random.gen_range(0.0..=1.0);
 
-    let mut fractal_chance = random.gen_range(0.0..=0.75);
-    let fractal_chance_acc = random.gen_range(-0.5..-0.05);
+    let mut fractal_chance = random.gen_range(0.0..=1.0);
+    let fractal_chance_reduction = random.gen_range(0.1..=1.0);
     let fractal_chance_ref = &mut fractal_chance;
 
     let mut noises = Vec::with_capacity(random.gen_range(1..16));
     for _ in 0..noises.capacity() {
         noises.push(gen_noise(
-            seed,
+            internal_seed,
             fractal_chance_ref,
-            fractal_chance_acc,
+            fractal_chance_reduction,
             decoration_chance,
             random,
         ));
@@ -472,15 +486,35 @@ pub fn random_noise<R: Rng>(random: &mut R) -> DynNoise<f64, 3> {
  * Color
  */
 
-const MIN_COLOR_LIGHT: f32 = 0.05;
-const MAX_COLOR_LIGHT: f32 = 0.95;
+pub const MIN_COLOR_LIGHT: f32 = 0.1;
+pub const MAX_COLOR_LIGHT: f32 = 0.9;
 
 pub fn random_color<R: Rng>(random: &mut R) -> Color {
     hsl_to_color(Hsl::new_srgb(
         random.gen_range(0.0..=1.0),
         random.gen_range(0.0..=1.0),
-        random.gen_range(MIN_COLOR_LIGHT..MAX_COLOR_LIGHT),
+        random.gen_range(MIN_COLOR_LIGHT..=MAX_COLOR_LIGHT),
     ))
+}
+
+pub fn random_background_color<R: Rng>(primary_color: Color, random: &mut R) -> Color {
+    let primary_color = color_to_hsl(primary_color);
+
+    let hsl = if primary_color.lightness > 0.15 {
+        Hsl::new_srgb(
+            primary_color.hue,
+            primary_color.saturation,
+            random.gen_range(0.95..=1.0),
+        )
+    } else {
+        Hsl::new_srgb(
+            primary_color.hue,
+            primary_color.saturation,
+            random.gen_range(0.0..0.05),
+        )
+    };
+
+    hsl_to_color(hsl)
 }
 
 pub fn random_palette<R: Rng>(size: usize, primary_color: Color, random: &mut R) -> Vec<Color> {
@@ -498,7 +532,7 @@ pub fn random_palette<R: Rng>(size: usize, primary_color: Color, random: &mut R)
 
     while palette.len() < size {
         let base_color = palette[random.gen_range(0..palette.len())];
-        let split = match random.gen_range(0..=4) {
+        let split = match random.gen_range(0..5) {
             0 => vec![base_color.complementary()],
             1 => {
                 let c = base_color.split_complementary();
@@ -539,29 +573,13 @@ pub fn random_palette<R: Rng>(size: usize, primary_color: Color, random: &mut R)
     palette.iter().map(|hsl: &Hsl| hsl_to_color(*hsl)).collect()
 }
 
-pub fn background_color<R: Rng>(primary_color: Color, random: &mut R) -> Color {
-    let primary_color = color_to_hsl(primary_color);
-
-    let hsl = if primary_color.lightness > 0.15 {
-        Hsl::new_srgb(
-            primary_color.hue,
-            primary_color.saturation,
-            random.gen_range(MAX_COLOR_LIGHT..=1.0),
-        )
-    } else {
-        Hsl::new_srgb(
-            primary_color.hue,
-            primary_color.saturation,
-            random.gen_range(0.0..MIN_COLOR_LIGHT),
-        )
-    };
-
-    hsl_to_color(hsl)
+pub fn hsl_to_color(hsl: Hsl) -> Color {
+    let srgb = Srgb::from_color_unclamped(hsl);
+    rgb_to_color(srgb)
 }
 
-pub fn hsl_to_color(hsl: Hsl) -> Color {
-    let srgb = Srgb::from_color_unclamped(hsl).into_format::<u8>();
-    Color::from_rgba8(srgb.red, srgb.green, srgb.blue, u8::MAX)
+pub fn rgb_to_color(srgb: Srgb) -> Color {
+    Color::new(srgb.red, srgb.green, srgb.blue, 1.0)
 }
 
 pub fn color_to_rgb(color: Color) -> Srgb {
@@ -572,26 +590,16 @@ pub fn color_to_hsl(color: Color) -> Hsl {
     Hsl::from_color_unclamped(color_to_rgb(color))
 }
 
-fn f64_min_max(source: Iter<'_, f64>) -> Option<(f64, f64)> {
-    let mut min = f64::MAX;
-    let mut max = f64::MIN;
-
-    for value in source {
-        let value = *value;
-        if min > value {
-            min = value;
-        }
-        if max < value {
-            max = value;
-        }
-    }
-
-    if min == f64::MAX || max == f64::MIN {
-        None
-    } else {
-        Some((min, max))
-    }
+pub fn color_to_image_rgb(color: Color) -> image::Rgb<u8> {
+    let srgb = color_to_rgb(color).into_format::<u8>();
+    image::Rgb::from([srgb.red, srgb.green, srgb.blue])
 }
+
+pub fn image_rgb_to_color(rgb: image::Rgb<u8>) -> Color {
+    let srgb = Srgb::new(rgb.0[0], rgb.0[1], rgb.0[2]).into_format::<f32>();
+    rgb_to_color(srgb)
+}
+
 
 /// O(n) warning, small `size` expected.
 fn rand_unique_f64_values<Rand, Range, RangeFn>(
