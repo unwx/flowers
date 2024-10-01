@@ -6,7 +6,6 @@ use colorgrad::{
 use dyn_clone::{clone_trait_object, DynClone};
 use glam::I16Vec2;
 use noise::core::worley::{distance_functions, ReturnType};
-use noise::utils::{NoiseMapBuilder, PlaneMapBuilder};
 use noise::{
     BasicMulti, Billow, Curve, Fbm, HybridMulti, MultiFractal, NoiseFn, Perlin, PerlinSurflet,
     RidgedMulti, RotatePoint, Seedable, Simplex, SuperSimplex, Terrace, Turbulence, Worley,
@@ -191,43 +190,59 @@ where
         return None;
     }
 
-    let mut pixels = Vec::with_capacity(total_elements);
-    let noise_map = PlaneMapBuilder::new(&noise)
-        .set_size((max_x - min_x) as usize, (max_y - min_y) as usize)
-        .set_x_bounds(f64::from(-noise_scale.abs()), f64::from(noise_scale.abs()))
-        .set_y_bounds(f64::from(-noise_scale.abs()), f64::from(noise_scale.abs()))
-        .build();
+    let noise_map = {
+        let mut noise_values = Vec::with_capacity(total_elements);
+        let noise_scale = noise_scale.abs() as f64;
+        let extent = noise_scale * 2.0;
 
-    let min_noise = *noise_map
-        .iter()
-        .min_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal))?;
-    let max_noise = *noise_map
-        .iter()
-        .max_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal))?;
-    let mut average_noise = 0.0_f64;
+        let width = (max_x - min_x) as usize;
+        let height = (max_y - min_y) as usize;
 
-    for (from, to) in area {
-        let y = from.y;
+        let x_step = extent / width as f64;
+        let y_step = extent / height as f64;
 
-        for x in from.x..=to.x {
-            let noise_value = normalize_f64(
-                noise_map.get_value((x - min_x) as usize, (y - min_y) as usize),
-                min_noise,
-                max_noise,
-                f64::from(gradient.domain().0),
-                f64::from(gradient.domain().1),
-            ) as f32;
+        for (from, to) in area {
+            let y = from.y;
+            let noise_y = -noise_scale + (y_step * (y - min_y) as f64);
 
-            let gradient_value = gradient.at(noise_value);
-            average_noise += noise_value as f64;
+            for x in from.x..=to.x {
+                let noise_x = -noise_scale + (x_step * (x - min_x) as f64);
 
-            pixels.push((I16Vec2::new(x, y), gradient_value));
+                let mut noise_value = noise.get([noise_x, noise_y, 0.0]);
+                if !noise_value.is_finite() {
+                    noise_value = 0.0;
+                }
+
+                noise_values.push((I16Vec2::new(x, y), noise_value))
+            }
         }
+
+        noise_values
+    };
+
+    let min_noise_value = noise_map.iter().min_by(|a, b| a.1.total_cmp(&b.1))?.1;
+    let max_noise_value = noise_map.iter().max_by(|a, b| a.1.total_cmp(&b.1))?.1;
+
+    let mut pixels = Vec::with_capacity(total_elements);
+    let mut most_common_normalized_noise = 0.0;
+
+    for (point, noise_value) in noise_map {
+        let noise_value = normalize_f64(
+            noise_value,
+            min_noise_value,
+            max_noise_value,
+            f64::from(gradient.domain().0),
+            f64::from(gradient.domain().1),
+        ) as f32;
+
+        let gradient_value = gradient.at(noise_value);
+        most_common_normalized_noise += noise_value as f64;
+
+        pixels.push((point, gradient_value));
     }
 
-    average_noise /= total_elements as f64;
-    pixels.shrink_to_fit();
-    Some((pixels, gradient.at(average_noise as f32)))
+    most_common_normalized_noise /= total_elements as f64;
+    Some((pixels, gradient.at(most_common_normalized_noise as f32)))
 }
 
 pub fn random_gradient<R: Rng>(colors: &[Color], random: &mut R) -> DynGradient {
