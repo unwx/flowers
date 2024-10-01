@@ -66,33 +66,33 @@ impl Gradient for DynGradient {
 pub const MAX_OCTAVES: usize = 16;
 
 pub trait CloneableNoise<T, const DIM: usize>: NoiseFn<T, DIM> + DynClone {}
-clone_trait_object!(CloneableNoise<f64, 3>);
+clone_trait_object!(CloneableNoise<f64, 2>);
 
-impl CloneableNoise<f64, 3> for DynNoise<f64, 3> {}
-impl CloneableNoise<f64, 3> for Perlin {}
-impl CloneableNoise<f64, 3> for PerlinSurflet {}
-impl CloneableNoise<f64, 3> for Simplex {}
-impl CloneableNoise<f64, 3> for SuperSimplex {}
-impl CloneableNoise<f64, 3> for Worley {}
+impl CloneableNoise<f64, 2> for DynNoise<f64, 2> {}
+impl CloneableNoise<f64, 2> for Perlin {}
+impl CloneableNoise<f64, 2> for PerlinSurflet {}
+impl CloneableNoise<f64, 2> for Simplex {}
+impl CloneableNoise<f64, 2> for SuperSimplex {}
+impl CloneableNoise<f64, 2> for Worley {}
 
-impl CloneableNoise<f64, 3> for Fbm<DynNoise<f64, 3>> {}
-impl CloneableNoise<f64, 3> for Billow<DynNoise<f64, 3>> {}
-impl CloneableNoise<f64, 3> for BasicMulti<DynNoise<f64, 3>> {}
-impl CloneableNoise<f64, 3> for HybridMulti<DynNoise<f64, 3>> {}
-impl CloneableNoise<f64, 3> for RidgedMulti<DynNoise<f64, 3>> {}
+impl CloneableNoise<f64, 2> for Fbm<DynNoise<f64, 2>> {}
+impl CloneableNoise<f64, 2> for Billow<DynNoise<f64, 2>> {}
+impl CloneableNoise<f64, 2> for BasicMulti<DynNoise<f64, 2>> {}
+impl CloneableNoise<f64, 2> for HybridMulti<DynNoise<f64, 2>> {}
+impl CloneableNoise<f64, 2> for RidgedMulti<DynNoise<f64, 2>> {}
 
-impl CloneableNoise<f64, 3> for noise::Abs<f64, DynNoise<f64, 3>, 3> {}
-impl CloneableNoise<f64, 3> for noise::Negate<f64, DynNoise<f64, 3>, 3> {}
-impl CloneableNoise<f64, 3> for RotatePoint<DynNoise<f64, 3>> {}
-impl CloneableNoise<f64, 3> for Turbulence<DynNoise<f64, 3>, DynNoise<f64, 3>> {}
-impl CloneableNoise<f64, 3> for Curve<f64, DynNoise<f64, 3>, 3> {}
-impl CloneableNoise<f64, 3> for Terrace<f64, DynNoise<f64, 3>, 3> {}
+impl CloneableNoise<f64, 2> for noise::Abs<f64, DynNoise<f64, 2>, 2> {}
+impl CloneableNoise<f64, 2> for noise::Negate<f64, DynNoise<f64, 2>, 2> {}
+impl CloneableNoise<f64, 2> for RotatePoint<DynNoise<f64, 2>> {}
+impl CloneableNoise<f64, 2> for Turbulence<DynNoise<f64, 2>, DynNoise<f64, 2>> {}
+impl CloneableNoise<f64, 2> for Curve<f64, DynNoise<f64, 2>, 2> {}
+impl CloneableNoise<f64, 2> for Terrace<f64, DynNoise<f64, 2>, 2> {}
 
-impl CloneableNoise<f64, 3> for noise::Add<f64, DynNoise<f64, 3>, DynNoise<f64, 3>, 3> {}
-impl CloneableNoise<f64, 3> for noise::Multiply<f64, DynNoise<f64, 3>, DynNoise<f64, 3>, 3> {}
-impl CloneableNoise<f64, 3> for noise::Power<f64, DynNoise<f64, 3>, DynNoise<f64, 3>, 3> {}
-impl CloneableNoise<f64, 3> for noise::Min<f64, DynNoise<f64, 3>, DynNoise<f64, 3>, 3> {}
-impl CloneableNoise<f64, 3> for noise::Max<f64, DynNoise<f64, 3>, DynNoise<f64, 3>, 3> {}
+impl CloneableNoise<f64, 2> for noise::Add<f64, DynNoise<f64, 2>, DynNoise<f64, 2>, 2> {}
+impl CloneableNoise<f64, 2> for noise::Multiply<f64, DynNoise<f64, 2>, DynNoise<f64, 2>, 2> {}
+impl CloneableNoise<f64, 2> for noise::Power<f64, DynNoise<f64, 2>, DynNoise<f64, 2>, 2> {}
+impl CloneableNoise<f64, 2> for noise::Min<f64, DynNoise<f64, 2>, DynNoise<f64, 2>, 2> {}
+impl CloneableNoise<f64, 2> for noise::Max<f64, DynNoise<f64, 2>, DynNoise<f64, 2>, 2> {}
 
 pub struct DynNoise<T, const DIM: usize> {
     noise: Box<dyn CloneableNoise<T, DIM>>,
@@ -122,13 +122,13 @@ impl<const DIM: usize> NoiseFn<f64, DIM> for DynNoise<f64, DIM> {
     }
 }
 
-impl Default for DynNoise<f64, 3> {
+impl Default for DynNoise<f64, 2> {
     fn default() -> Self {
         DynNoise::new(Perlin::default())
     }
 }
 
-impl Clone for DynNoise<f64, 3> {
+impl Clone for DynNoise<f64, 2> {
     fn clone(&self) -> Self {
         Self {
             noise: self.noise.clone(),
@@ -160,7 +160,7 @@ pub fn colorize<G, N>(
 ) -> Option<(Vec<(I16Vec2, Color)>, Color)>
 where
     G: Gradient,
-    N: NoiseFn<f64, 3>,
+    N: NoiseFn<f64, 2>,
 {
     if area.is_empty() {
         return None;
@@ -208,7 +208,7 @@ where
             for x in from.x..=to.x {
                 let noise_x = -noise_scale + (x_step * (x - min_x) as f64);
 
-                let mut noise_value = noise.get([noise_x, noise_y, 0.0]);
+                let mut noise_value = noise.get([noise_x, noise_y]);
                 if !noise_value.is_finite() {
                     noise_value = 0.0;
                 }
@@ -273,13 +273,13 @@ pub fn random_gradient<R: Rng>(colors: &[Color], random: &mut R) -> DynGradient 
     .unwrap()
 }
 
-pub fn random_noise<R: Rng>(internal_seed: u32, random: &mut R) -> DynNoise<f64, 3> {
+pub fn random_noise<R: Rng>(internal_seed: u32, random: &mut R) -> DynNoise<f64, 2> {
     #[rustfmt::skip]
     fn decorate_noise<R: Rng>(
-        noise: DynNoise<f64, 3>,
+        noise: DynNoise<f64, 2>,
         decoration_chance: f32,
         random: &mut R,
-    ) -> DynNoise<f64, 3> {
+    ) -> DynNoise<f64, 2> {
         if random.gen_range(0.0..=1.0) < decoration_chance {
             return noise;
         }
@@ -339,7 +339,7 @@ pub fn random_noise<R: Rng>(internal_seed: u32, random: &mut R) -> DynNoise<f64,
         fractal_chance_reduction: f32,
         decoration_chance: f32,
         random: &mut R,
-    ) -> DynNoise<f64, 3> {
+    ) -> DynNoise<f64, 2> {
         fn gen_noises<R: Rng>(
             size: usize,
             seed: u32,
@@ -347,7 +347,7 @@ pub fn random_noise<R: Rng>(internal_seed: u32, random: &mut R) -> DynNoise<f64,
             fractal_chance_reduction: f32,
             decoration_chance: f32,
             random: &mut R,
-        ) -> Vec<DynNoise<f64, 3>> {
+        ) -> Vec<DynNoise<f64, 2>> {
             let mut noises = Vec::with_capacity(size);
             for _ in 0..size {
                 *fractal_chance = (*fractal_chance - fractal_chance_reduction).clamp(0.0, 1.0);
@@ -449,7 +449,7 @@ pub fn random_noise<R: Rng>(internal_seed: u32, random: &mut R) -> DynNoise<f64,
         decorate_noise(noise, decoration_chance, random)
     }
 
-    fn merge_noises<R: Rng>(mut noises: Vec<DynNoise<f64, 3>>, random: &mut R) -> DynNoise<f64, 3> {
+    fn merge_noises<R: Rng>(mut noises: Vec<DynNoise<f64, 2>>, random: &mut R) -> DynNoise<f64, 2> {
         if noises.is_empty() {
             return DynNoise::default();
         }

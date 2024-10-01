@@ -106,12 +106,12 @@ impl RandomGradient {
 struct RandomNoise {
     noise_seed: Option<u64>,
     noise_internal_seed: Option<u32>,
-    noise: Option<Rc<DynNoise<f64, 3>>>,
+    noise: Option<Rc<DynNoise<f64, 2>>>,
 }
 
 impl RandomNoise {
     #[rustfmt::skip]
-    fn get<R: Rng>(&self, random: &mut R) -> Rc<DynNoise<f64, 3>> {
+    fn get<R: Rng>(&self, random: &mut R) -> Rc<DynNoise<f64, 2>> {
         self.noise.clone().unwrap_or_else(|| {
             Rc::new(random_noise(
                 self.noise_internal_seed.unwrap_or_else(|| random.next_u32()),
@@ -137,7 +137,7 @@ struct LayerGenOptions<'a> {
 
 struct PetalGenOptions<'a> {
     gradient: &'a DynGradient,
-    noise: &'a DynNoise<f64, 3>,
+    noise: &'a DynNoise<f64, 2>,
 
     mirror: bool,
     flip: bool,
