@@ -32,7 +32,6 @@ pub fn scale_and_merge_sides(
 
     let mut skeleton = Vec::with_capacity((size as usize) * 3);
     let scale = |point: Vec2| -> I16Vec2 {
-        debug_assert!(point.length() <= 1.000001);
         (point * f32::from(size)).round().as_i16vec2()
     };
 
@@ -113,9 +112,9 @@ pub fn find_petal_area(skeleton: &[I16Vec2]) -> Vec<(I16Vec2, I16Vec2)> {
     }
 
     {
-        let zero_y_index = (0 - min_y) as usize;
-        if checkpoints[zero_y_index].len() % 2 != 0 {
-            checkpoints[zero_y_index].push(0);
+        let origin = skeleton[0];
+        if let Some(x_checkpoints) = checkpoints.get_mut((origin.y - min_y) as usize) {
+            x_checkpoints.push(origin.x);
         }
     }
 
@@ -231,6 +230,138 @@ pub fn find_petal_area(skeleton: &[I16Vec2]) -> Vec<(I16Vec2, I16Vec2)> {
     area
 }
 
+pub fn find_visible_back_area(
+    back_area: &[(I16Vec2, I16Vec2)],
+    front_area: &[(I16Vec2, I16Vec2)],
+) -> Vec<(I16Vec2, I16Vec2)> {
+    if back_area.is_empty() {
+        return vec![];
+    }
+    if front_area.is_empty() {
+        return back_area.to_vec();
+    }
+
+    {
+        // Not a guarantee, but it eliminates primitive errors
+        fn verify(area: &[(I16Vec2, I16Vec2)], index: usize, name: &'static str) {
+            let (from, to) = area[index];
+            assert_eq!(
+                from.y, to.y,
+                "invalid {} area: 'Y' coordinates must be the same for the start and end points of the range. [from = {}, to = {}]",
+                name, from, to
+            );
+            assert!(
+                from.x <= to.x,
+                "invalid {} area: the starting 'X' coordinate must be less than or equal to the ending 'X' coordinate. [from = {}, to = {}]",
+                name,
+                from,
+                to
+            );
+        }
+
+        verify(back_area, 0, "back");
+        verify(back_area, back_area.len() / 2, "back");
+
+        verify(front_area, 0, "back");
+        verify(front_area, front_area.len() / 2, "back");
+    }
+
+    let mut visible_area = Vec::with_capacity(back_area.len().max(front_area.len()));
+    let mut back_index = 0;
+    let mut front_index = 0;
+
+    macro_rules! next {
+        ($($var:ident),+) => {
+            $(
+                $var += 1;
+            )+
+            continue;
+        };
+    }
+
+    while back_index < back_area.len() && front_index < front_area.len() {
+        let (back_from, back_to) = back_area[back_index];
+        let (front_from, front_to) = front_area[front_index];
+
+        {
+            fn check_previous(area: &[(I16Vec2, I16Vec2)], index: usize) {
+                if index == 0 {
+                    return;
+                }
+
+                let (from, _) = area[index];
+                let (previous_from, previous_to) = area[index - 1];
+
+                if from.y != previous_from.y {
+                    debug_assert!(from.y > previous_from.y)
+                } else {
+                    debug_assert!(from.x >= previous_to.x)
+                }
+            }
+
+            debug_assert_eq!(back_from.y, back_to.y);
+            debug_assert_eq!(front_from.y, front_to.y);
+            debug_assert!(back_from.x <= back_to.x);
+            debug_assert!(front_from.x <= front_to.x);
+
+            check_previous(back_area, back_index);
+            check_previous(front_area, front_index);
+        }
+
+        // '()' is the back area range, '[]' is the front area range
+        // // '(' or '[' indicates the 'from' point.
+        // // ')' or ']' indicates the 'to' point (inclusive).
+        // '...' means 0 or more elements
+        // '___' means 1 or more elements
+
+        if back_from.y == front_from.y {
+            if back_to.x < front_from.x {
+                // (...)___[...]
+                visible_area.push(back_area[back_index]);
+                next!(back_index);
+            }
+
+            if front_to.x < back_from.x {
+                // [...]___(...)
+                next!(front_index);
+            }
+
+            {
+                if front_from.x > back_from.x {
+                    // (___[...?
+                    visible_area.push((back_from, front_from - I16Vec2::new(1, 0)));
+                }
+
+                if front_to.x < back_to.x {
+                    // ?...]___)
+                    visible_area.push((front_to + I16Vec2::new(1, 0), back_to));
+                    next!(front_index, back_index);
+                } else {
+                    // ?...)...]
+                    next!(back_index);
+                }
+            }
+        } else if back_from.y > front_from.y {
+            // (...)
+            //  ...    ↑
+            // [...] - ↑
+            next!(front_index);
+        } else {
+            // [...]
+            //  ...    ↑
+            // (...) - ↑
+            visible_area.push(back_area[back_index]);
+            next!(back_index);
+        }
+    }
+
+    for range in back_area.iter().skip(back_index) {
+        visible_area.push(range.clone());
+    }
+
+    visible_area
+}
+
 fn side<Func, ArcFunc>(
     k: f32,
     step: f32,
@@ -255,7 +386,7 @@ where
     }
 
     {
-        let rotation = Mat2::from_angle(angle + side.last().unwrap().angle_to(Vec2::Y) + PI);
+        let rotation = Mat2::from_angle(angle + side.last().unwrap().angle_to(Vec2::Y) + PI); // TODO: incorrect `angle` usage?
         for point in &mut side {
             *point = rotation.mul_vec2(*point);
         }

@@ -2,41 +2,14 @@ use crate::color::{color_to_hsl, color_to_image_rgb, hsl_to_color, image_rgb_to_
 use crate::flower::Flower;
 use crate::mosaic::Mosaic;
 use colorgrad::Color;
-use glam::{I16Vec2, Mat2, UVec2};
+use glam::{I16Vec2, UVec2};
 use image::RgbImage;
 use imageproc::drawing::draw_filled_circle_mut;
-use std::ops::{AddAssign, MulAssign};
 
 pub struct Drawing {
     pub skeleton: Vec<I16Vec2>,
     pub pixels: Vec<(I16Vec2, Color)>,
     pub average_color: Color,
-}
-
-impl Drawing {
-    fn shift_points<F>(&mut self, mut func: F)
-    where
-        F: FnMut(&mut I16Vec2),
-    {
-        self.skeleton.iter_mut().for_each(&mut func);
-        self.pixels.iter_mut().for_each(|(point, _)| func(point));
-    }
-}
-
-impl AddAssign<I16Vec2> for Drawing {
-    fn add_assign(&mut self, rhs: I16Vec2) {
-        if rhs == I16Vec2::ZERO {
-            return;
-        }
-
-        self.shift_points(|point| *point += rhs);
-    }
-}
-
-impl MulAssign<Mat2> for Drawing {
-    fn mul_assign(&mut self, rhs: Mat2) {
-        self.shift_points(|point| *point = rhs.mul_vec2(point.as_vec2()).round().as_i16vec2());
-    }
 }
 
 pub fn draw_mosaic(mosaic: &Mosaic) -> RgbImage {
@@ -50,10 +23,8 @@ pub fn draw_flower(flower: &Flower) -> RgbImage {
     let mut image = create_image_with_extra_size(flower.size);
     fill_with_color(flower.background_color.clone(), &mut image);
 
-    for layer in &flower.layers {
-        for petal in &layer.petals {
-            draw(petal, flower.background_color.clone(), &mut image);
-        }
+    for petal in &flower.petals {
+        draw(petal, flower.background_color.clone(), &mut image);
     }
 
     {
@@ -63,7 +34,7 @@ pub fn draw_flower(flower: &Flower) -> RgbImage {
         draw_filled_circle_mut(
             &mut image,
             (center as i32, center as i32),
-            ((flower.mosaic.size as f32 * 0.075) as i32).min(image_size),
+            ((flower.mosaic.size as f32 * 0.55) as i32).min(image_size),
             color_to_image_rgb(flower.background_color.clone()),
         );
         draw(&flower.mosaic, flower.background_color.clone(), &mut image);
@@ -88,7 +59,7 @@ fn draw_skeleton(skeleton: &[I16Vec2], background_color: Color, image: &mut RgbI
     };
 
     for point in skeleton {
-        let point = centralize(*point, center);
+        let point = centralize(*point, center); // TODO incorrect visualization?
         let pixel = image.get_pixel_mut(point.x, point.y);
         let mut pixel_hsl = color_to_hsl(image_rgb_to_color(pixel.clone()));
 

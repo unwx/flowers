@@ -3,27 +3,33 @@ use crate::color::{
     DynGradient, DynNoise, MAX_COLOR_LIGHT, MIN_COLOR_LIGHT,
 };
 use crate::graphics::Drawing;
-use crate::math::normalize_f32;
+use crate::math::{find_nearest_f32, normalize_f32, wrap_radians};
 use crate::mosaic::{random_mosaic, Mosaic};
-use crate::petal::{find_petal_area, scale_and_merge_sides, side_sin, side_tan, MergeMode};
+use crate::petal::{
+    find_petal_area, find_visible_back_area, scale_and_merge_sides, side_sin, side_tan, MergeMode,
+};
 use crate::rand::RecoverableRng;
 use colorgrad::Color;
 use glam::{I16Vec2, Mat2, Vec2};
+use palette::num::MinMax;
 use rand::prelude::SliceRandom;
 use rand::{Rng, RngCore};
 use std::f32::consts::PI;
 use std::ops::{Div, RangeInclusive};
 use std::rc::Rc;
+use std::time::Instant;
 
 pub struct Flower {
     pub mosaic: Mosaic,
-    pub layers: Vec<Layer>,
+    pub petals: Vec<Drawing>,
     pub background_color: Color,
     pub size: u16,
 }
 
-pub struct Layer {
-    pub petals: Vec<Drawing>,
+#[derive(Copy, Clone)]
+enum PetalFunction {
+    Sin,
+    Tan,
 }
 
 #[derive(Copy, Clone)]
@@ -60,17 +66,6 @@ impl RandomValue {
     fn get<R: Rng>(self, random: &mut R) -> f32 {
         self.value + random.gen_range(-self.max_delta..=self.max_delta)
     }
-
-    #[rustfmt::skip]
-    fn clone_within_delta<R: Rng>(self, random: &mut R) -> RandomValue {
-        let new_value = random.gen_range((self.value - self.max_delta)..=(self.value + self.max_delta));
-        let new_delta = random.gen_range(0.0..=(self.max_delta - (new_value - self.value).abs()));
-
-        Self {
-            value: new_value,
-            max_delta: new_delta,
-        }
-    }
 }
 
 impl Div<f32> for RandomValue {
@@ -87,7 +82,6 @@ impl Div<f32> for RandomValue {
 #[derive(Clone)]
 struct RandomGradient {
     palette: Vec<Color>,
-    gradient_seed: Option<u64>,
     gradient: Option<Rc<DynGradient>>,
 }
 
@@ -96,7 +90,7 @@ impl RandomGradient {
         self.gradient.clone().unwrap_or_else(|| {
             Rc::new(random_gradient(
                 self.palette.as_slice(),
-                &mut RecoverableRng::new(self.gradient_seed.unwrap_or_else(|| random.next_u64())),
+                &mut RecoverableRng::new(random.next_u64()),
             ))
         })
     }
@@ -105,46 +99,67 @@ impl RandomGradient {
 #[derive(Clone)]
 struct RandomNoise {
     noise_seed: Option<u64>,
-    noise_internal_seed: Option<u32>,
     noise: Option<Rc<DynNoise<f64, 2>>>,
 }
 
 impl RandomNoise {
-    #[rustfmt::skip]
     fn get<R: Rng>(&self, random: &mut R) -> Rc<DynNoise<f64, 2>> {
         self.noise.clone().unwrap_or_else(|| {
             Rc::new(random_noise(
-                self.noise_internal_seed.unwrap_or_else(|| random.next_u32()),
+                random.next_u32(),
                 &mut RecoverableRng::new(self.noise_seed.unwrap_or_else(|| random.next_u64())),
             ))
         })
     }
 }
 
-struct LayerGenOptions<'a> {
-    gradient: &'a RandomGradient,
-    noise: &'a RandomNoise,
-
-    mirror: bool,
+#[derive(Clone)]
+struct LayerGenOptions {
     flip: bool,
-    petal_distance_from_origin: u16,
+    mirror: bool,
+    mirror_direction: RandomValue,
+    petal_function: PetalFunction,
     petal_arrangement: PetalArrangement,
-
+    petal_distance_from_origin: u16,
     k: RandomValue,
-    noise_scale: RandomValue,
     size: RandomValue,
 }
 
-struct PetalGenOptions<'a> {
-    gradient: &'a DynGradient,
-    noise: &'a DynNoise<f64, 2>,
-
-    mirror: bool,
-    flip: bool,
-
+#[derive(Copy, Clone)]
+struct PetalOptions {
     k: f32,
-    size: u16,
-    noise_scale: f32,
+    flip: bool,
+    mirror: bool,
+    mirror_direction: bool,
+    function: PetalFunction,
+}
+
+struct Petal {
+    skeleton: Vec<I16Vec2>,
+    area: Vec<(I16Vec2, I16Vec2)>,
+    left_side_angle: f32,
+    center_angle: f32,
+    right_side_angle: f32,
+}
+
+impl Petal {
+    pub fn new(
+        skeleton: Vec<I16Vec2>,
+        area: Vec<(I16Vec2, I16Vec2)>,
+        left_side_angle: f32,
+        center_angle: f32,
+        right_side_angle: f32,
+    ) -> Self {
+        let mut petal = Self {
+            skeleton,
+            area,
+            left_side_angle: wrap_radians(left_side_angle),
+            center_angle: wrap_radians(center_angle),
+            right_side_angle: wrap_radians(right_side_angle),
+        };
+
+        petal
+    }
 }
 
 const MIN_RADIUS: u16 = 16;
@@ -170,18 +185,12 @@ pub fn random_flower(radius: u16, random: &mut RecoverableRng) -> Option<Flower>
             mosaic.average_color.clone(),
             random,
         );
-        let gradient_seed = random.gen_option(|r| r.next_u64());
         let gradient = random.gen_option(|r| Rc::new(random_gradient(palette.as_slice(), r)));
 
-        RandomGradient {
-            palette,
-            gradient_seed,
-            gradient,
-        }
+        RandomGradient { palette, gradient }
     };
     let noise = RandomNoise {
         noise_seed: random.gen_option(|r| r.next_u64()),
-        noise_internal_seed: random.gen_option(|r| r.next_u32()),
         noise: random.gen_option(|r| Rc::new(random_noise(r.next_u32(), r))),
     };
 
@@ -189,54 +198,38 @@ pub fn random_flower(radius: u16, random: &mut RecoverableRng) -> Option<Flower>
     let petal_arrangement_choice =
         random.gen_option(|r| r.gen_range(petal_arrangement_choice_range.clone()));
 
-    let mirror = random.gen_option(|r| r.gen_bool(0.5));
-    let flip = random.gen_option(|r| r.gen_bool(0.5));
+    let flip = random.gen_bool(0.5);
+    let mirror = random.gen_bool(0.5);
+    let mirror_direction = RandomValue {
+        value: 0.0,
+        max_delta: if random.gen_bool(0.5) { 1.0 } else { 0.0 },
+    };
+    let petal_function = if random.gen_bool(0.5) {
+        PetalFunction::Sin
+    } else {
+        PetalFunction::Tan
+    };
 
     let k_range = 1.1..=6.0;
     let k = RandomValue::from_range(k_range.clone(), random);
-    let noise_scale = {
-        let value_range = 0.1..=7.5;
+    let noise_scale = random.gen_range(0.1..=10.0);
 
-        if noise.noise.is_some()
-            || (noise.noise_seed.is_some() && noise.noise_internal_seed.is_some())
-        {
-            RandomValue {
-                value: random.gen_range(value_range.clone()),
-                max_delta: 0.0,
-            }
-        } else {
-            RandomValue::from_range(value_range, random)
-        }
-    };
-
-    let petal_distance_from_origin_range = 0..=((radius as f32 * 0.8) as u16);
-    let petal_distance_from_origin = 0; // TODO random.gen_range(petal_distance_from_origin_range.clone());
+    let petal_distance_from_origin_range = 0..=((mosaic_radius as f32 * 0.8) as u16);
+    let petal_distance_from_origin = random.gen_range(petal_distance_from_origin_range.clone());
     let min_petal_length = {
-        let min_length = (petal_distance_from_origin as f32 * 1.1)
-            .min(i16::MAX as f32)
-            .min(radius as f32) as u16;
+        let min_length = (petal_distance_from_origin as f32 * 1.1).min(radius as f32) as u16;
         random.gen_range(min_length..=radius)
     };
 
     for i in (0..layers_count).rev() {
         let gen_options = LayerGenOptions {
-            gradient: &gradient,
-            noise: &noise,
-            mirror: mirror.unwrap_or_else(|| random.gen_bool(0.5)),
-            flip: flip.unwrap_or_else(|| random.gen_bool(0.5)),
-            petal_distance_from_origin,
+            flip,
+            mirror,
+            mirror_direction,
+            petal_function,
             petal_arrangement: {
                 let initial_angle = random.gen_range(-PI..=PI);
-                let max_interpetal_angle_delta = {
-                    let max_delta = normalize_f32(
-                        k.value,
-                        *k_range.start(),
-                        *k_range.end(),
-                        PI / 8.0,
-                        PI / 4.0,
-                    );
-                    random.gen_range(0.0..=max_delta)
-                };
+                let max_interpetal_angle_delta = random.gen_range(0.0..=(PI / 4.0));
 
                 match petal_arrangement_choice
                     .unwrap_or_else(|| random.gen_range(petal_arrangement_choice_range.clone()))
@@ -268,17 +261,18 @@ pub fn random_flower(radius: u16, random: &mut RecoverableRng) -> Option<Flower>
                     _ => unreachable!(),
                 }
             },
-            k: k.clone_within_delta(random),
-            noise_scale: noise_scale.clone_within_delta(random),
+            petal_distance_from_origin,
+            k,
             size: {
                 let value = normalize_f32(
-                    i as f32,
-                    0.0,
-                    layers_count as f32 - 1.0,
+                    i as f32 + 1.0,
+                    1.0,
+                    layers_count as f32,
                     min_petal_length as f32,
                     radius as f32,
                 );
-                let max_delta = ((radius as f32 - min_petal_length as f32) / (layers_count * 2) as f32)
+                let max_delta = ((radius as f32 - min_petal_length as f32)
+                    / (layers_count * 2).max(1) as f32)
                     .min(value - min_petal_length as f32)
                     .min(radius as f32 - value);
                 let max_delta = random.gen_range(0.0..=max_delta);
@@ -290,112 +284,358 @@ pub fn random_flower(radius: u16, random: &mut RecoverableRng) -> Option<Flower>
         layers.push(random_layer(&gen_options, random)?);
     }
 
-    {
-        let change = {
-            let light = color_to_hsl(mosaic.average_color.clone()).lightness;
-            let value = normalize_f32(0.5 - (0.5 - light).abs(), 0.0, 0.5, 0.01, 0.04);
-            let value = random.gen_range(0.01..=value);
-
-            if light < 0.5 {
-                -value
-            } else {
-                value
-            }
-        };
-
-        for (i, layer) in layers.iter_mut().enumerate().skip(1) {
-            for petal in &mut layer.petals {
-                for (_, color) in &mut petal.pixels {
-                    let mut hsl = color_to_hsl(color.clone());
-                    hsl.lightness = (hsl.lightness + (change * i as f32))
-                        .clamp(MIN_COLOR_LIGHT, MAX_COLOR_LIGHT);
-                    *color = hsl_to_color(hsl)
-                }
-            }
-        }
-    }
-
+    optimize_layers_and_shuffle_petals(&mut layers, random);
+    let petals = draw_layers(
+        layers,
+        mosaic.average_color.clone(),
+        &gradient,
+        &noise,
+        noise_scale,
+        random,
+    )?;
     let background_color = mosaic.background_color.clone();
+
     Some(Flower {
         mosaic,
-        layers,
+        petals,
         background_color,
         size: radius * 2,
     })
 }
 
-fn random_layer<R: Rng>(options: &LayerGenOptions, random: &mut R) -> Option<Layer> {
-    fn new_petal<R: Rng>(options: &LayerGenOptions, random: &mut R) -> Option<Drawing> {
-        random_petal(
-            &PetalGenOptions {
-                gradient: options.gradient.get(random).as_ref(),
-                noise: options.noise.get(random).as_ref(),
-                mirror: options.mirror,
-                flip: options.flip,
-                k: options.k.get(random),
-                size: options.size.get(random).round().max(1.0) as u16,
-                noise_scale: options.noise_scale.get(random),
-            },
-            random,
+fn draw_layers<R: Rng>(
+    layers: Vec<Vec<Petal>>,
+    average_color: Color,
+    gradient: &RandomGradient,
+    noise: &RandomNoise,
+    noise_scale: f32,
+    random: &mut R,
+) -> Option<Vec<Drawing>> {
+    let light_change = {
+        let light = color_to_hsl(average_color).lightness;
+        let value = normalize_f32(0.5 - (0.5 - light).abs(), 0.0, 0.5, 0.01, 0.04);
+        let value = random.gen_range(0.01..=value);
+
+        if light < 0.5 {
+            value
+        } else {
+            -value
+        }
+    };
+
+    let mut drawings = Vec::with_capacity(layers.len());
+    for (layer_index, layer) in layers.into_iter().enumerate() {
+        for petal in layer {
+            let (mut pixels, color) = colorize(
+                petal.area.as_slice(),
+                gradient.get(random).as_ref(),
+                noise.get(random).as_ref(),
+                noise_scale,
+            )?;
+
+            for (_, color) in &mut pixels {
+                let mut hsl = color_to_hsl(color.clone());
+                hsl.lightness = (hsl.lightness + (light_change * layer_index as f32))
+                    .clamp(MIN_COLOR_LIGHT, MAX_COLOR_LIGHT);
+                *color = hsl_to_color(hsl)
+            }
+
+            drawings.push(Drawing {
+                skeleton: petal.skeleton,
+                pixels,
+                average_color: color,
+            })
+        }
+    }
+
+    Some(drawings)
+}
+
+fn optimize_layers_and_shuffle_petals<R: Rng>(layers: &mut Vec<Vec<Petal>>, random: &mut R) {
+    // The biggest petals are first.
+
+    let mut orders = Vec::with_capacity(layers.len());
+    for layer in layers.iter() {
+        let mut order = Vec::with_capacity(layer.len());
+        for i in 0..layer.len() {
+            order.push(i);
+        }
+
+        order.shuffle(random);
+        orders.push(order);
+    }
+
+    let (left_angle_sorted_layers, right_angle_sorted_layers) = {
+        fn sort_layers<F>(layers: &mut Vec<Vec<Petal>>, to_angle: F) -> Vec<Vec<(usize, f32)>>
+        where
+            F: Fn(&Petal) -> f32,
+        {
+            let mut sorted_layers = Vec::with_capacity(layers.len());
+            for layer in layers.iter() {
+                let mut sorted = Vec::with_capacity(layer.len());
+                for (index, petal) in layer.iter().enumerate() {
+                    sorted.push((index, to_angle(petal)));
+                }
+
+                sorted.sort_unstable_by(|p1, p2| p1.1.total_cmp(&p2.1));
+                sorted_layers.push(sorted);
+            }
+
+            sorted_layers
+        }
+
+        (
+            sort_layers(layers, |petal| petal.left_side_angle),
+            sort_layers(layers, |petal| petal.right_side_angle),
         )
-        .map(|mut petal| {
-            petal += I16Vec2::new(0, options.petal_distance_from_origin as i16);
-            petal
+    };
+
+    fn optimize_back_area(
+        back: &[(I16Vec2, I16Vec2)],
+        front_areas: &[&[(I16Vec2, I16Vec2)]],
+    ) -> Vec<(I16Vec2, I16Vec2)> {
+        if front_areas.is_empty() {
+            return back.to_vec();
+        }
+
+        let mut visible_area = find_visible_back_area(back, front_areas[0]);
+        for front in front_areas.iter().skip(1) {
+            visible_area = find_visible_back_area(visible_area.as_slice(), front);
+        }
+
+        visible_area
+    }
+
+    fn find_overlapping_petals(
+        petal: &Petal,
+        petals: &Vec<Petal>,
+        left_sorted_petals: &Vec<(usize, f32)>,
+        right_sorted_petals: &Vec<(usize, f32)>,
+    ) -> Vec<usize> {
+        if petals.is_empty() {
+            return vec![];
+        }
+
+        let mut left_index = find_nearest_f32(
+            left_sorted_petals.as_slice(),
+            petal.left_side_angle,
+            |petal| petal.1,
+        )
+        .unwrap_or(0);
+        let mut right_index = find_nearest_f32(
+            right_sorted_petals.as_slice(),
+            petal.right_side_angle,
+            |petal| petal.1,
+        )
+        .unwrap_or(right_sorted_petals.len() - 1);
+
+        let adjust_petal_index =
+            |index: usize, direction: isize, sorted_petals: &Vec<(usize, f32)>| -> usize {
+                let overlaps = |other_petal: &Petal| -> bool {
+                    if petal.left_side_angle <= petal.right_side_angle {
+                        petal.left_side_angle <= other_petal.right_side_angle
+                            && other_petal.left_side_angle <= petal.right_side_angle
+                    } else {
+                        petal.left_side_angle <= other_petal.right_side_angle
+                            || other_petal.left_side_angle <= petal.right_side_angle
+                    }
+                    // true
+                };
+                let wrap_index = |index: usize, offset: isize| -> usize {
+                    ((index as isize) + offset).rem_euclid(petals.len() as isize) as usize
+                };
+
+                let mut adjusted_index = wrap_index(index, 0);
+                for _ in 0..petals.len() {
+                    let wrapped_index = wrap_index(adjusted_index, direction);
+                    if overlaps(&petals[sorted_petals[wrapped_index].0]) {
+                        adjusted_index = wrapped_index;
+                    } else {
+                        break;
+                    }
+                }
+
+                if !overlaps(&petals[sorted_petals[adjusted_index].0]) {
+                    for _ in 0..petals.len() {
+                        let wrapped_index = wrap_index(adjusted_index, -direction);
+                        if overlaps(&petals[sorted_petals[wrapped_index].0]) {
+                            adjusted_index = wrapped_index;
+                            break;
+                        }
+                    }
+                }
+
+                adjusted_index
+            };
+
+        left_index = adjust_petal_index(left_index, -1, left_sorted_petals);
+        right_index = adjust_petal_index(right_index, 1, right_sorted_petals);
+
+        // let from_left_petal_index = left_sorted_petals[left_index].0;
+        // let to_right_petal_index = {
+        //     let index = right_sorted_petals[right_index].0;
+        //     if index < from_left_petal_index {
+        //         index + petals.len()
+        //     } else {
+        //         index
+        //     }
+        // }; TODO fix angles
+        let from_left_petal_index = 0;
+        let to_right_petal_index = petals.len() - 1;
+
+        let mut overlapping_petals =
+            Vec::with_capacity((to_right_petal_index - from_left_petal_index) + 1);
+        for i in from_left_petal_index..=to_right_petal_index {
+            overlapping_petals.push(i.rem_euclid(petals.len()));
+        }
+
+        overlapping_petals
+    }
+
+    for i in 0..layers.len() {
+        for y in i..layers.len() {
+            for petal_index in 0..layers[i].len() {
+                let petal = &layers[i][petal_index];
+                let mut overlapping_petals = find_overlapping_petals(
+                    petal,
+                    &layers[y],
+                    &left_angle_sorted_layers[y],
+                    &right_angle_sorted_layers[y],
+                );
+
+                if i == y {
+                    let petal_order = orders[i][petal_index];
+                    overlapping_petals = overlapping_petals
+                        .iter()
+                        .filter(|&&other_petal_index| orders[y][other_petal_index] > petal_order)
+                        .map(|&other_petal_index| other_petal_index)
+                        .collect();
+                }
+
+                let optimized_area = optimize_back_area(
+                    petal.area.as_slice(),
+                    overlapping_petals
+                        .iter()
+                        .map(|&other_petal_index| layers[y][other_petal_index].area.as_slice())
+                        .collect::<Vec<&[(I16Vec2, I16Vec2)]>>()
+                        .as_slice(),
+                );
+
+                let petal = &mut layers[i][petal_index];
+                petal.area = optimized_area;
+            }
+        }
+    }
+}
+
+fn random_layer<R: Rng>(options: &LayerGenOptions, random: &mut R) -> Option<Vec<Petal>> {
+    struct FloatPetal {
+        sides: (Vec<Vec2>, Vec<Vec2>),
+        left_side_angle: f32,
+        center_angle: f32,
+        right_side_angle: f32,
+        expected_size: u16,
+    }
+
+    impl FloatPetal {
+        fn shift_angles(&mut self, shift: f32) {
+            self.left_side_angle += shift;
+            self.center_angle += shift;
+            self.right_side_angle += shift;
+            self.wrap_angles();
+        }
+
+        fn wrap_angles(&mut self) {
+            self.left_side_angle = wrap_radians(self.left_side_angle);
+            self.center_angle = wrap_radians(self.center_angle);
+            self.right_side_angle = wrap_radians(self.right_side_angle);
+        }
+    }
+
+    fn new_petal<R: Rng>(options: &LayerGenOptions, random: &mut R) -> Option<FloatPetal> {
+        let mut skeleton = petal_sides(PetalOptions {
+            k: options.k.get(random),
+            flip: options.flip,
+            mirror: options.mirror,
+            mirror_direction: options.mirror_direction.get(random) > 0.0,
+            function: options.petal_function,
+        });
+        let size = (options.size.get(random) - options.petal_distance_from_origin as f32) as u16;
+
+        {
+            let distance = normalize_f32(
+                options.petal_distance_from_origin as f32,
+                0.0,
+                (size + options.petal_distance_from_origin) as f32,
+                0.0,
+                1.0,
+            );
+            for point in skeleton.0.iter_mut().chain(skeleton.1.iter_mut()) {
+                point.y += distance;
+            }
+        }
+
+        let left_side_angle = skeleton
+            .0
+            .iter()
+            .chain(skeleton.1.iter())
+            .min_by(|point1, point2| point1.x.total_cmp(&point2.x))
+            .map(|point| point.to_angle())?;
+        let right_side_angle = skeleton
+            .0
+            .iter()
+            .chain(skeleton.1.iter())
+            .max_by(|point1, point2| point1.x.total_cmp(&point2.x))
+            .map(|point| point.to_angle())?;
+
+        Some(FloatPetal {
+            sides: skeleton,
+            left_side_angle: wrap_radians(left_side_angle),
+            center_angle: PI / 2.0,
+            right_side_angle: wrap_radians(right_side_angle),
+            expected_size: size,
         })
     }
 
-    let mut petals: Vec<Drawing> = match options.petal_arrangement {
+    let mut petals = match options.petal_arrangement {
         PetalArrangement::Valvate {
             initial_angle,
             max_interpetal_angle_delta,
         } => {
-            struct PetalWithAngles {
-                petal: Drawing,
-                min_angle: f32,
-                max_angle: f32,
+            let mut petals = Vec::new();
+            let circle = initial_angle + (PI * 2.0);
+
+            {
+                let mut angle = initial_angle;
+                while angle < circle {
+                    let petal = new_petal(&options, random)?;
+                    angle += {
+                        if petal.right_side_angle >= petal.left_side_angle {
+                            petal.right_side_angle - petal.left_side_angle
+                        } else {
+                            let wrapped_right_side_angle = petal.right_side_angle + (PI * 2.0);
+                            if wrapped_right_side_angle < petal.left_side_angle {
+                                debug_assert!(false);
+                                break;
+                            }
+
+                            wrapped_right_side_angle - petal.left_side_angle
+                        }
+                    };
+                    petals.push(petal);
+                }
+
+                angle
+            };
+
+            let angle_step = circle / petals.len() as f32;
+            for (index, petal) in petals.iter_mut().enumerate() {
+                let mut shift = index as f32 * angle_step;
+                shift += random.gen_range(-max_interpetal_angle_delta..=max_interpetal_angle_delta);
+                petal.shift_angles(shift);
             }
 
-            let mut current_angle = initial_angle;
-            let to_angle = initial_angle + (PI * 2.0);
-            let mut petal_with_angles_vec = Vec::new();
-
-            while current_angle < to_angle {
-                let petal = new_petal(&options, random)?;
-                let min_angle = petal
-                    .skeleton
-                    .iter()
-                    .min_by_key(|point| point.x)
-                    .map(|point| point.as_vec2().to_angle())?;
-                let max_angle = petal
-                    .skeleton
-                    .iter()
-                    .max_by_key(|point| point.x)
-                    .map(|point| point.as_vec2().to_angle())?;
-
-                petal_with_angles_vec.push(PetalWithAngles {
-                    petal,
-                    min_angle,
-                    max_angle,
-                });
-                current_angle += min_angle - max_angle;
-            }
-
-            let angle_leveler = (current_angle - to_angle) / petal_with_angles_vec.len() as f32;
-            let mut last_angle = initial_angle;
-
-            for petal_with_angles in &mut petal_with_angles_vec {
-                let angle = (last_angle - angle_leveler) + (petal_with_angles.max_angle - petal_with_angles.min_angle);
-                last_angle = angle;
-
-                petal_with_angles.petal *= Mat2::from_angle(
-                    angle + random.gen_range(-max_interpetal_angle_delta..=max_interpetal_angle_delta),
-                );
-            }
-
-            petal_with_angles_vec
-                .into_iter()
-                .map(|item| item.petal)
-                .collect()
+            petals
         }
         PetalArrangement::RadiallySymmetrical {
             initial_angle,
@@ -409,64 +649,66 @@ fn random_layer<R: Rng>(options: &LayerGenOptions, random: &mut R) -> Option<Lay
                 let mut angle = initial_angle + ((i as f32 / petals_count as f32) * (PI * 2.0));
                 angle += random.gen_range(-max_interpetal_angle_delta..=max_interpetal_angle_delta);
 
-                petal *= Mat2::from_angle(angle);
+                petal.shift_angles(angle);
                 petals.push(petal)
             }
 
+            petals.shrink_to_fit();
             petals
         }
     };
 
-    petals.shuffle(random);
-    petals.shrink_to_fit();
-    Some(Layer { petals })
+    for petal in &mut petals {
+        let rotation = Mat2::from_angle(petal.center_angle);
+        for point in petal.sides.0.iter_mut().chain(petal.sides.1.iter_mut()) {
+            *point = rotation.mul_vec2(*point);
+        }
+    }
+
+    let scaled_petals = petals
+        .into_iter()
+        .map(|petal| {
+            let skeleton = scale_and_merge_sides(
+                petal.sides.0.as_slice(),
+                petal.sides.1.as_slice(),
+                petal.expected_size,
+                MergeMode::SideWithSide,
+            );
+            let area = find_petal_area(skeleton.as_slice());
+
+            Petal {
+                skeleton: skeleton.clone(),
+                area,
+                left_side_angle: petal.left_side_angle,
+                center_angle: petal.center_angle,
+                right_side_angle: petal.right_side_angle,
+            }
+        })
+        .collect();
+
+    Some(scaled_petals)
 }
 
-fn random_petal<R: Rng>(options: &PetalGenOptions, random: &mut R) -> Option<Drawing> {
-    let skeleton = {
-        let (mirror1, mirror2) = if options.mirror {
-            (false, true)
+fn petal_sides(options: PetalOptions) -> (Vec<Vec2>, Vec<Vec2>) {
+    let (mirror1, mirror2) = {
+        let direction = options.mirror_direction;
+
+        if options.mirror {
+            (direction, !direction)
         } else {
-            let base = random.gen_bool(0.5);
-            (base, base)
-        };
+            (direction, direction)
+        }
+    };
+
+    let side = |mirror: bool| -> Vec<Vec2> {
+        let step = 0.0001;
         let angle = if options.flip { PI } else { 0.0 };
 
-        fn side<R: Rng>(options: &PetalGenOptions, angle: f32, mirror: bool, random: &mut R) -> Vec<Vec2> {
-            let step = normalize_f32(options.size as f32, 0.0, MAX_RADIUS as f32, 0.001, 0.00001);
-            if random.gen_bool(0.5) {
-                side_sin(options.k, step, angle, mirror)
-            } else {
-                side_tan(options.k / 2.0, step, angle, mirror)
-            }
+        match options.function {
+            PetalFunction::Sin => side_sin(options.k, step, angle, mirror),
+            PetalFunction::Tan => side_tan(options.k / 2.0, step, angle, mirror),
         }
+    };
 
-        let side1 = side(options, angle, mirror1, random);
-        let side2 = side(options, angle, mirror2, random);
-
-        if side1.is_empty() || side2.is_empty() {
-            return None;
-        }
-
-        Some(scale_and_merge_sides(
-            side1.as_slice(),
-            side2.as_slice(),
-            options.size,
-            MergeMode::SideWithSide,
-        ))
-    }?;
-    let area = find_petal_area(skeleton.as_slice());
-
-    let (pixels, average_color) = colorize(
-        area.as_slice(),
-        options.gradient,
-        options.noise,
-        options.noise_scale,
-    )?;
-
-    Some(Drawing {
-        skeleton,
-        pixels,
-        average_color,
-    })
+    (side(mirror1), side(mirror2))
 }
