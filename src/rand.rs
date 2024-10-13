@@ -2,20 +2,23 @@ use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use std::ops::{Deref, DerefMut};
 
-pub struct RecoverableRng {
-    gen: ChaCha8Rng,
+#[derive(Debug, Clone)]
+pub struct RestorableRng {
+    delegate: ChaCha8Rng,
     seed: u64,
 }
 
-impl RecoverableRng {
+impl RestorableRng {
+    #[must_use]
     pub fn new(seed: u64) -> Self {
         Self {
-            gen: ChaCha8Rng::seed_from_u64(seed),
+            delegate: ChaCha8Rng::seed_from_u64(seed),
             seed,
         }
     }
 
-    pub fn recover(&self) -> Self {
+    #[must_use]
+    pub fn restore(&self) -> Self {
         Self::new(self.seed)
     }
 
@@ -23,50 +26,49 @@ impl RecoverableRng {
     where
         F: FnOnce(&mut Self) -> T,
     {
-        random_option(self, func)
+        self.gen_weighted_option(0.5, func)
+    }
+
+    pub fn gen_weighted_option<F, T>(&mut self, probability: f64, func: F) -> Option<T>
+    where
+        F: FnOnce(&mut Self) -> T,
+    {
+        if self.gen_bool(probability) {
+            Some(func(self))
+        } else {
+            None
+        }
     }
 }
 
-impl Deref for RecoverableRng {
+impl Deref for RestorableRng {
     type Target = ChaCha8Rng;
 
     fn deref(&self) -> &Self::Target {
-        &self.gen
+        &self.delegate
     }
 }
 
-impl DerefMut for RecoverableRng {
+impl DerefMut for RestorableRng {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.gen
+        &mut self.delegate
     }
 }
 
-impl RngCore for RecoverableRng {
+impl RngCore for RestorableRng {
     fn next_u32(&mut self) -> u32 {
-        self.gen.next_u32()
+        self.delegate.next_u32()
     }
 
     fn next_u64(&mut self) -> u64 {
-        self.gen.next_u64()
+        self.delegate.next_u64()
     }
 
     fn fill_bytes(&mut self, dest: &mut [u8]) {
-        self.gen.fill_bytes(dest)
+        self.delegate.fill_bytes(dest)
     }
 
     fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
-        self.gen.try_fill_bytes(dest)
-    }
-}
-
-pub fn random_option<R, F, T>(random: &mut R, func: F) -> Option<T>
-where
-    R: Rng,
-    F: FnOnce(&mut R) -> T,
-{
-    if random.gen_bool(0.5) {
-        Some(func(random))
-    } else {
-        None
+        self.delegate.try_fill_bytes(dest)
     }
 }
