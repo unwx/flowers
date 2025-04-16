@@ -1,169 +1,100 @@
-use crate::math::real::{debug_assert_finite, debug_eval_finite};
-use crate::math::to_cartesian;
-use glam::{I16Vec2, Mat2, Vec2};
-use std::iter::Rev;
+use crate::math::definition::{IntPoint, Point, PointExtensions, Scalar};
+use crate::util::macros::{debug_assert_finite, debug_assert_interpolated, debug_eval_finite};
+use std::fmt::Debug;
+use std::hash::Hash;
+use std::ops::Deref;
 
-#[derive(Copy, Clone)]
-pub enum MergeMode {
-    ZigZag,
-    Origin(I16Vec2),
+// TODO Docs
+//  - A ClosedCurve cannot be empty.
+//  - The first and last points of a ClosedCurve are always the same (the curve is self-closed).
+//  - A ClosedCurve should be interpolated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosedCurve {
+    points: Vec<IntPoint>,
 }
 
-#[must_use]
-pub fn merge(curves: &[&[I16Vec2]], mode: MergeMode) -> Vec<I16Vec2> {
-    if curves.is_empty() {
-        return vec![];
-    }
+impl TryFrom<Vec<IntPoint>> for ClosedCurve {
+    type Error = ();
 
-    let mut merged = Vec::with_capacity({
+    fn try_from(points: Vec<IntPoint>) -> Result<Self, Self::Error> {
+        if !points.is_empty() && points.first() == points.last() {
+            debug_assert_interpolated!(&points);
+            Ok(ClosedCurve { points })
+        } else {
+            Err(())
+        }
+    }
+}
+
+impl Deref for ClosedCurve {
+    type Target = Vec<IntPoint>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.points
+    }
+}
+
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum MergeMode {
+    ZigZag,
+    Origin,
+}
+
+pub fn merge<T: Clone>(curves: Vec<Vec<T>>, mode: MergeMode) -> Vec<T> {
+    let capacity = {
         let length = curves.iter().map(|c| c.len()).sum();
         match mode {
             MergeMode::ZigZag => length,
-            MergeMode::Origin(_) => length + curves.len(),
+            MergeMode::Origin => length + curves.len(),
         }
-    });
+    };
+    let mut merged = Vec::with_capacity(capacity);
 
     match mode {
         MergeMode::ZigZag => {
-            let mut head = true;
+            let mut forward = true;
 
             for curve in curves {
-                enum DynIterator<'a> {
-                    Basic(std::slice::Iter<'a, I16Vec2>),
-                    Reverse(Rev<std::slice::Iter<'a, I16Vec2>>),
-                }
-                impl<'a> Iterator for DynIterator<'a> {
-                    type Item = &'a I16Vec2;
-
-                    fn next(&mut self) -> Option<Self::Item> {
-                        match self {
-                            DynIterator::Basic(i) => i.next(),
-                            DynIterator::Reverse(i) => i.next(),
-                        }
-                    }
-                }
-
-                let iterator = if head {
-                    DynIterator::Basic(curve.iter())
+                let iterator: Box<dyn Iterator<Item = T>> = if forward {
+                    Box::new(curve.into_iter())
                 } else {
-                    DynIterator::Reverse(curve.iter().rev())
+                    Box::new(curve.into_iter().rev())
                 };
 
-                for point in iterator {
-                    merged.push(*point);
-                }
-
-                head = !head;
+                merged.extend(iterator);
+                forward = !forward;
             }
         }
-        MergeMode::Origin(origin) => {
+        MergeMode::Origin => {
             for curve in curves {
-                for point in curve.iter() {
-                    merged.push(*point);
+                if let Some(origin) = curve.first().cloned() {
+                    merged.extend(curve.into_iter());
+                    merged.push(origin);
                 }
-
-                merged.push(origin);
             }
         }
     }
 
+    debug_assert_eq!(merged.len(), capacity);
     merged
 }
 
-#[must_use]
-pub fn scale(curve: &[Vec2], factor: u16) -> Vec<I16Vec2> {
-    if curve.is_empty() {
-        return vec![];
-    }
-    assert!(factor >= 1, "factor must be >= 1");
+
+pub fn scale(curve: &[Point], factor: u16) -> Vec<IntPoint> {
     debug_assert_finite!(curve);
+    let factor = factor as Scalar;
 
-    let scale = |point: Vec2| -> I16Vec2 {
-        debug_eval_finite!((point * factor as f32).round()).as_i16vec2()
-    };
     let mut scaled_curve = Vec::with_capacity(curve.len());
-    scaled_curve.push(scale(curve[0]));
-
-    for point in curve.iter().skip(1) {
-        let scaled_point = scale(*point);
-        if *scaled_curve.last().unwrap() != scaled_point {
+    for scaled_point in curve
+        .iter()
+        .map(|p| debug_eval_finite!((p * factor).round()).as_int_point())
+    {
+        if Some(&scaled_point) != scaled_curve.last() {
             scaled_curve.push(scaled_point);
         }
     }
 
     scaled_curve.shrink_to_fit();
     scaled_curve
-}
-
-#[must_use]
-pub fn eval_polar_sin(k: f32, step: f32, angle: f32, mirror: bool) -> Vec<Vec2> {
-    eval_polar(k, step, angle, mirror, f32::sin, f32::asin)
-}
-
-#[must_use]
-pub fn eval_polar_tan(k: f32, step: f32, angle: f32, mirror: bool) -> Vec<Vec2> {
-    eval_polar(k, step, angle, mirror, f32::tan, f32::atan)
-}
-
-#[must_use]
-fn eval_polar<Func, ArcFunc>(
-    k: f32,
-    step: f32,
-    angle: f32,
-    mirror: bool,
-    trig_func: Func,
-    arc_trig_func: ArcFunc,
-) -> Vec<Vec2>
-where
-    Func: Fn(f32) -> f32,
-    ArcFunc: Fn(f32) -> f32,
-{
-    debug_assert_finite!(k, step, angle);
-    assert!(k > 0.0, "k must be > 0.0");
-    assert!(step > 0.0, "step must be > 0.0");
-
-    let length = {
-        let float = debug_eval_finite!((arc_trig_func(1.0) / k) / step).max(0.0);
-        if float as f64 > usize::MAX as f64 {
-            panic!(
-                "Polar function visualization length exceeds usize::MAX. \
-                Consider adjusting parameters, especially 'step'. \
-                Current parameters: [k: {k}, step: {step}, angle: {angle}, mirror: {mirror}]"
-            )
-        }
-        float as usize
-    };
-
-    if length == 0 {
-        return vec![];
-    }
-
-    let mut curve = Vec::with_capacity(length);
-    for i in 0..length {
-        let theta = i as f32 * step;
-        let point = to_cartesian(trig_func(theta * k), theta);
-
-        debug_assert_finite!(point);
-        curve.push(point);
-    }
-
-    {
-        let last_point_angle = curve.last().unwrap().to_angle();
-        debug_assert_finite!(last_point_angle);
-
-        let rotation = Mat2::from_angle(angle - last_point_angle);
-        for point in &mut curve {
-            *point = rotation.mul_vec2(*point);
-        }
-    }
-
-    if mirror {
-        for point in &mut curve {
-            point.y = -point.y;
-        }
-    }
-
-    debug_assert_eq!(curve.len(), length);
-    debug_assert_finite!(&curve);
-    curve
 }

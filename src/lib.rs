@@ -1,118 +1,116 @@
-use crate::flower::random_flower;
-use crate::graphics::image::{draw_flower, draw_mosaic};
-use crate::mosaic::random_mosaic;
-use crate::rand::RestorableRng;
+use crate::art::flower::FlowerFactory;
+use crate::art::mosaic::{Mosaic, MosaicFactory};
+use crate::constraint::{MAX_MOSAIC_RADIUS, MIN_MOSAIC_RADIUS};
+use crate::render::{draw_flower, draw_mosaic};
 use ::anyhow::Result;
-use ::rand::prelude::StdRng;
-use ::rand::Rng;
 use anyhow::Context;
-use image::RgbImage;
-use rand_core::SeedableRng;
+use image::RgbaImage;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 
-pub(crate) mod common;
-pub(crate) mod flower;
-pub(crate) mod graphics;
-pub(crate) mod math;
-pub(crate) mod mosaic;
-pub(crate) mod rand;
+pub mod art;
+pub mod constraint;
+pub mod math;
+pub mod util;
 
-pub fn gen_mosaic(radius: u16, blank_image_space_percent: f32) -> Result<(RgbImage, u64)> {
-    let seed = random_seed();
-    gen_mosaic_from_seed(seed, radius, blank_image_space_percent).map(|image| (image, seed))
-}
+mod color;
+mod noise;
+mod render;
 
-pub fn gen_mosaic_from_seed(
+type Random = StdRng;
+
+pub fn random_mosaic_from_seed(
     seed: u64,
-    radius: u16,
-    blank_image_space_percent: f32,
-) -> Result<RgbImage> {
-    assert!(
-        (mosaic::MIN_RADIUS..=mosaic::MAX_RADIUS).contains(&radius),
-        "invalid radius ({radius}), allowed: [{} <= radius <= {}]",
-        mosaic::MIN_RADIUS,
-        mosaic::MAX_RADIUS
-    );
-    assert!(
-        (0.0..=1.0).contains(&blank_image_space_percent),
-        "invalid blank_image_space_percent({blank_image_space_percent}), allowed: [0.0 <= blank_image_space_percent <= 1.0]"
-    );
+    mosaic_radius: u16,
+    image_size: u16,
+) -> Result<RgbaImage> {
+    let mosaic = random_mosaic(seed, mosaic_radius)?;
+    let mut image = RgbaImage::new(image_size as u32, image_size as u32);
 
-    let mut random = RestorableRng::new(seed);
-    let mosaic = random_mosaic(radius, &mut random).context("failed to generate mosaic")?;
-    let image = draw_mosaic(&mosaic, blank_image_space_percent).context("failed to draw mosaic")?;
+    draw_mosaic(&mosaic, &mut image);
     Ok(image)
 }
 
-pub fn gen_flower(radius: u16, blank_image_space_percent: f32) -> Result<(RgbImage, u64)> {
-    let seed = random_seed();
-    gen_flower_from_seed(seed, radius, blank_image_space_percent).map(|image| (image, seed))
-}
-
-pub fn gen_flower_from_seed(
+pub fn random_flower_from_seed(
     seed: u64,
-    radius: u16,
-    blank_image_space_percent: f32,
-) -> Result<RgbImage> {
-    assert!(
-        (flower::MIN_RADIUS..=flower::MAX_RADIUS).contains(&radius),
-        "invalid radius ({radius}), allowed: [{} <= radius <= {}]",
-        flower::MIN_RADIUS,
-        flower::MAX_RADIUS
-    );
-    assert!(
-        (0.0..=1.0).contains(&blank_image_space_percent),
-        "invalid blank_image_space_percent({blank_image_space_percent}), allowed: [0.0 <= blank_image_space_percent <= 1.0]"
-    );
+    flower_radius: u16,
+    image_size: u16,
+) -> Result<RgbaImage> {
+    let mut random = Random::seed_from_u64(seed);
 
-    let mut random = RestorableRng::new(seed);
-    let flower = random_flower(radius, &mut random).context("failed to generate flower")?;
-    let image = draw_flower(&flower, blank_image_space_percent).context("failed to draw flower")?;
+    let mosaic = {
+        let mosaic_radius_percent = random.gen_range(0.25..=0.45);
+        let mut mosaic_radius = ((flower_radius as f32) * mosaic_radius_percent) as u16;
+        mosaic_radius = mosaic_radius.clamp(MIN_MOSAIC_RADIUS, MAX_MOSAIC_RADIUS);
+
+        random_mosaic(seed, mosaic_radius).with_context(|| {
+            format!("failed to generate a flower. [seed: {seed}, radius: {flower_radius}]")
+        })?
+    };
+
+    let flower = FlowerFactory::new_random(&mut random)
+        .random_flower(mosaic, flower_radius, &mut random)
+        .with_context(|| {
+            format!("failed to generate a flower. [seed: {seed}, radius: {flower_radius}]")
+        })?;
+
+    let mut image = RgbaImage::new(image_size as u32, image_size as u32);
+    draw_flower(&flower, &mut image);
     Ok(image)
 }
 
-fn random_seed() -> u64 {
-    StdRng::from_entropy().gen_range(u64::MIN..=u64::MAX)
+
+fn random_mosaic(seed: u64, radius: u16) -> Result<Mosaic> {
+    let mut random = Random::seed_from_u64(seed);
+    MosaicFactory::new_random(&mut random)
+        .random_mosaic(radius, &mut random)
+        .with_context(|| format!("failed to generate a mosaic. [seed: {seed}, radius: {radius}]"))
 }
+
 
 #[cfg(test)]
 mod tests {
-    use crate::{gen_flower_from_seed, gen_mosaic_from_seed, random_seed};
+    use crate::{random_flower_from_seed, random_mosaic_from_seed};
+    use rand::prelude::StdRng;
+    use rand::{RngCore, SeedableRng};
     use std::fs;
 
     #[test]
     fn mosaic() {
-        fs::create_dir_all("dev/mosaic").unwrap();
+        let path = "dev/mosaic";
+        fs::create_dir_all(path).unwrap();
 
         for _ in 0..10 {
             let radius = 1250;
-            let blank_image_space_percent = 0.1;
-            let seed = random_seed();
+            let image_size = (radius as f32 * 2.0 * 1.2) as u16;
+            let seed = StdRng::from_entropy().next_u64();
 
-            println!("Generating mosaic, seed: {seed}");
-            let result = gen_mosaic_from_seed(seed, radius, blank_image_space_percent);
+            println!("Generating a mosaic, seed: {seed}");
+            let result = random_mosaic_from_seed(seed, radius, image_size);
 
             match result {
-                Ok(image) => image.save(format!("dev/mosaic/{seed}.png")).unwrap(),
-                Err(e) => println!("failed to generate mosaic: {:?}", e),
+                Ok(image) => image.save(format!("{path}/{seed}.png")).unwrap(),
+                Err(e) => println!("{:?}", e),
             }
         }
     }
 
     #[test]
     fn flower() {
-        fs::create_dir_all("dev/flower").unwrap();
+        let path = "dev/flower";
+        fs::create_dir_all(path).unwrap();
 
         for _ in 0..10 {
             let radius = 1250;
-            let blank_image_space_percent = 0.1;
-            let seed = random_seed();
+            let image_size = (radius as f32 * 2.0 * 1.2) as u16;
+            let seed = StdRng::from_entropy().next_u64();
 
-            println!("Generating flower, seed: {seed}");
-            let result = gen_flower_from_seed(seed, radius, blank_image_space_percent);
+            println!("Generating a flower, seed: {seed}");
+            let result = random_flower_from_seed(seed, radius, image_size);
 
             match result {
-                Ok(image) => image.save(format!("dev/flower/{seed}.png")).unwrap(),
-                Err(e) => println!("failed to generate flower: {:?}", e),
+                Ok(image) => image.save(format!("{path}/{seed}.png")).unwrap(),
+                Err(e) => println!("{:?}", e),
             }
         }
     }
