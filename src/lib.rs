@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use crate::art::flower::FlowerFactory;
 use crate::art::mosaic::{Mosaic, MosaicFactory};
 use crate::constraint::{MAX_MOSAIC_RADIUS, MIN_MOSAIC_RADIUS};
