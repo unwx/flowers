@@ -1,4 +1,7 @@
-target/
 .idea/
+.zed/
+
 dev/
+target/
+
 Cargo.lock
