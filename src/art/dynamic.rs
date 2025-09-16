@@ -62,7 +62,7 @@ impl Gradient for DynGradient {
         self.0.clone()
     }
 
-    fn inverse<'a>(&self) -> InverseGradient
+    fn inverse<'a>(&self) -> InverseGradient<'_>
     where
         Self: 'a,
     {
